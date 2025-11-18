@@ -192,7 +192,7 @@ class SupplierModel
                       FROM {$this->table_name} s
                       LEFT JOIN users u ON s.user_id = u.id
                       LEFT JOIN branches b ON s.branch_id = b.id
-                      WHERE s.id = ? AND s.status != 'archived'";
+                      WHERE s.id = ? ";
 
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$id]);

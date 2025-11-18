@@ -142,6 +142,21 @@ try {
             $controller = new CustomerController();
             $controller->handleRequest($segments);
             break;
+        case 'employees':
+            require_once __DIR__ . '/controllers/employee.controller.php';
+            $controller = new EmployeeController();
+            $controller->handleRequest($segments);
+            break;
+        case 'expenses':
+            require_once __DIR__ . '/controllers/expense.controller.php';
+            $controller = new ExpenseController();
+            $controller->handleRequest($segments);
+            break;
+        case 'stocks':
+            require_once __DIR__ . '/controllers/stock.controller.php';
+            $controller = new StockController();
+            $controller->handleRequest($segments);
+            break;
         default:
             throw new Exception("Endpoint not found. " . $resource, 404);
     }

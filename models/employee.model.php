@@ -16,10 +16,7 @@ class EmployeeModel
         $this->conn = $this->db->getConnection();
     }
 
-    /* --------------------------------------------------------------------
-        ADD EMPLOYEE
-       -------------------------------------------------------------------- */
-    public function addEmployee($data)
+      public function addEmployee($data)
     {
         try {
             // Validation of required fields
@@ -194,10 +191,6 @@ class EmployeeModel
             );
         }
     }
-
-    /* --------------------------------------------------------------------
-        GET EMPLOYEE BY ID
-       -------------------------------------------------------------------- */
     public function getEmployeeById($id)
     {
         if (empty($id)) {
@@ -209,7 +202,7 @@ class EmployeeModel
                       FROM {$this->table_name} e
                       LEFT JOIN users u ON e.user_id = u.id AND u.status = 'active'
                       LEFT JOIN branches b ON e.branch_id = b.id AND b.status = 'active'
-                      WHERE e.id = ? AND e.status != 'archived'";
+                      WHERE e.id = ? ";
 
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$id]);
