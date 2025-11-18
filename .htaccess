@@ -1,0 +1,11 @@
+# Enable the rewrite engine
+RewriteEngine On
+RewriteBase /textile-track-system/
+# Check if the requested file/directory exists
+# If it does exist, stop rewriting and serve the file directly
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# If the file/directory does NOT exist, redirect the request to index.php
+# The [L] flag means 'Last Rule'
+RewriteRule ^(.*)$ index.php [QSA,L]
