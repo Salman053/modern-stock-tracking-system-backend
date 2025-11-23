@@ -54,7 +54,7 @@ class ProductController
     private function handleGetProducts()
     {
         $user = require_authenticated_user();
-        if (!$user['data']['data']) {
+        if (!$user['data']['role']) {
             $response = errorResponse("Unauthorized or session expired");
             sendResponse(401, $response);
             return;
@@ -63,9 +63,10 @@ class ProductController
         // Get query parameters for filtering
         $user_id = $_GET['user_id'] ?? null;
         $branch_id = $_GET['branch_id'] ?? null;
+        $status = $_GET['status'] ?? null;
 
         try {
-            $result = $this->productModel->getProducts($user_id, $branch_id);
+            $result = $this->productModel->getProducts($user_id, $branch_id,$status);
 
             if ($result["success"]) {
                 sendResponse(200, $result);
@@ -84,7 +85,7 @@ class ProductController
     private function handleGetProductById($productId)
     {
         $user = require_authenticated_user();
-        if (!$user['data']['data']) {
+        if (!$user['data']['role']) {
             $response = errorResponse("Unauthorized or session expired");
             sendResponse(401, $response);
             return;
@@ -117,11 +118,16 @@ class ProductController
             return;
         }
 
-        $user = require_authenticated_user();
+        $user = require_authenticated_user(true);
 
         // Check if user has permission to add products
         if ($user['data']["role"] !== "super-admin" && $user['data']["role"] !== "branch-admin") {
             $response = errorResponse("Forbidden: Only admins can add products");
+            sendResponse(403, $response);
+            return;
+        }
+        if(!password_verify($data["admin_password"],$user["data"]["password"])){
+             $response = errorResponse("Forbidden: Only branch can add products");
             sendResponse(403, $response);
             return;
         }
@@ -130,9 +136,7 @@ class ProductController
             $result = $this->productModel->addProduct($data);
 
             if ($result["success"]) {
-                $response = successResponse("Product added successfully", [
-                    'product_id' => $result["product_id"]
-                ]);
+                $response = successResponse("Product added successfully");
                 sendResponse(201, $response);
             } else {
                 sendResponse(400, $result);

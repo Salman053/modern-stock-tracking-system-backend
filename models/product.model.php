@@ -1,7 +1,6 @@
 <?php
 
 require_once "utils/validation_utils.php";
-require_once "utils/response_utils.php";
 require_once "config/database.php";
 
 class ProductModel
@@ -57,73 +56,83 @@ class ProductModel
 
             $stmt->execute();
 
-            $productData = [
-                "product_id" => $this->conn->lastInsertId(),
-                "name" => $data["name"],
-                "type" => $data["type"],
-                "branch_id" => $data["branch_id"]
-            ];
+            $product_id = $this->conn->lastInsertId();
+
+            // Fetch complete product record including auto-generated profit_margin
+            $fetchQuery = "SELECT * FROM {$this->table_name} WHERE id = :id LIMIT 1";
+            $fetchStmt = $this->conn->prepare($fetchQuery);
+            $fetchStmt->bindValue(":id", $product_id);
+            $fetchStmt->execute();
+
+            $product = $fetchStmt->fetch(PDO::FETCH_ASSOC);
 
             return successResponse(
-                "Product added successfully", 
-                $productData
-            );
-
+                "Product added successfully",
+                $product
+            );  
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
     }
+public function getProducts($user_id = null, $branch_id = null, $status = null)
+{
+    $query = "SELECT * FROM {$this->table_name} WHERE 1=1";
+    $params = [];
 
-    /* --------------------------------------------------------------------
-        GET PRODUCTS
-       -------------------------------------------------------------------- */
-    public function getProducts($user_id = null, $branch_id = null)
-    {
-        $query = "SELECT * FROM {$this->table_name} WHERE status != 'archived'";
-        $params = [];
-
-        if ($user_id) {
-            $query .= " AND user_id = :user_id";
-            $params[":user_id"] = $user_id;
-        }
-        
-        if ($branch_id) {
-            $query .= " AND branch_id = :branch_id";
-            $params[":branch_id"] = $branch_id;
-        }
-
-        $query .= " ORDER BY created_at DESC";
-
-        try {
-            $stmt = $this->conn->prepare($query);
-            
-            foreach ($params as $key => $value) {
-                $stmt->bindValue($key, $value);
-            }
-            
-            $stmt->execute();
-
-            $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            return successResponse(
-                "Products retrieved successfully", 
-                $products,
-                ["count" => count($products)]
-            );
-
-        } catch (PDOException $e) {
-            return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
-                "DATABASE_EXCEPTION"
-            );
-        }
+    if ($user_id) {
+        $query .= " AND user_id = :user_id";
+        $params[":user_id"] = $user_id;
     }
 
+    if ($branch_id) {
+        $query .= " AND branch_id = :branch_id";
+        $params[":branch_id"] = $branch_id;
+    }
+
+    if ($status) {
+        $query .= " AND status = :status";
+        $params[":status"] = $status;
+    }
+
+    // Order by status (active first) and then by created date (newest first)
+    $query .= " ORDER BY 
+        CASE 
+            WHEN status = 'active' THEN 1
+            WHEN status = 'inactive' THEN 2
+            WHEN status = 'out_of_stock' THEN 3
+            WHEN status = 'archived' THEN 4
+            ELSE 5
+        END ASC,
+        created_at DESC";
+
+    try {
+        $stmt = $this->conn->prepare($query);
+
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value);
+        }
+
+        $stmt->execute();
+
+        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return successResponse(
+            "Products retrieved successfully",
+            $products,
+            ["count" => count($products)]
+        );
+    } catch (PDOException $e) {
+        return errorResponse(
+            "Database error occurred",
+            ["database" => $e->getMessage()],
+            "DATABASE_EXCEPTION"
+        );
+    }
+}
     /* --------------------------------------------------------------------
         GET SINGLE PRODUCT
        -------------------------------------------------------------------- */
@@ -147,11 +156,10 @@ class ProductModel
             }
 
             return successResponse("Product retrieved successfully", $product);
-
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -182,9 +190,17 @@ class ProductModel
 
         foreach ($data as $key => $value) {
             // Validate allowed fields to prevent SQL injection
-            $allowedFields = ["name", "type", "description", "company", "quantity", 
-                            "purchase_price_per_meter", "sales_price_per_meter", "status"];
-            
+            $allowedFields = [
+                "name",
+                "type",
+                "description",
+                "company",
+                "quantity",
+                "purchase_price_per_meter",
+                "sales_price_per_meter",
+                "status"
+            ];
+
             if (in_array($key, $allowedFields)) {
                 $fields[] = "$key = :$key";
                 $params[":$key"] = $value;
@@ -206,13 +222,17 @@ class ProductModel
             }
 
             $stmt->execute();
+            $fetchQuery = "SELECT * FROM {$this->table_name} WHERE id = :id LIMIT 1";
+            $fetchStmt = $this->conn->prepare($fetchQuery);
+            $fetchStmt->bindValue(":id", $id);
+            $fetchStmt->execute();
+            $product = $fetchStmt->fetch(PDO::FETCH_ASSOC);
 
-            return successResponse("Product updated successfully");
-
+            return successResponse("Product updated successfully", $product);
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -241,11 +261,10 @@ class ProductModel
             $stmt->execute();
 
             return successResponse("Product archived successfully");
-
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -262,20 +281,20 @@ class ProductModel
 
         try {
             $offset = ($page - 1) * $limit;
-            
+
             // Count total records
             if ($include_archived) {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} WHERE branch_id = :branch_id";
             } else {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} WHERE branch_id = :branch_id AND status != 'archived'";
             }
-            
+
             $countStmt = $this->conn->prepare($countQuery);
             $countStmt->bindValue(":branch_id", $branch_id);
             $countStmt->execute();
             $totalCount = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
             $totalPages = ceil($totalCount / $limit);
-            
+
             // Get paginated data
             if ($include_archived) {
                 $query = "SELECT * FROM {$this->table_name} 
@@ -288,15 +307,15 @@ class ProductModel
                           ORDER BY created_at DESC 
                           LIMIT :limit OFFSET :offset";
             }
-            
+
             $stmt = $this->conn->prepare($query);
             $stmt->bindValue(":branch_id", $branch_id, PDO::PARAM_INT);
             $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
             $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
             $stmt->execute();
-            
+
             $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
+
             $paginationMeta = [
                 'current_page' => (int)$page,
                 'per_page' => (int)$limit,
@@ -305,17 +324,16 @@ class ProductModel
                 'has_next' => $page < $totalPages,
                 'has_prev' => $page > 1
             ];
-            
+
             return successResponse(
-                "Products retrieved successfully", 
+                "Products retrieved successfully",
                 $products,
                 $paginationMeta
             );
-
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
