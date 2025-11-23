@@ -49,6 +49,9 @@ class UserController
             case 'logout':
                 $this->logoutSessionUser();
                 break;
+            case "password":
+                $this->updatePassword($data);
+                break;
             case 'update':
                 $this->updateUser($data);
                 break;
@@ -72,6 +75,9 @@ class UserController
                 $this->getSingleUser();
                 break;
             case 'branch':
+                $this->getUsersByBranchWithPagination();
+                break;
+            case 'branch-users':
                 $this->getUsersByBranch();
                 break;
             case 'all':
@@ -123,12 +129,16 @@ class UserController
 
     private function register($data)
     {
-        $user = require_authenticated_user();
+        $user = require_authenticated_user(true);
 
         if (($user['data']["role"] ?? null) !== "super-admin") {
             $response = errorResponse("Forbidden. Only super-admin can register new users");
             sendResponse(403, $response);
             return;
+        }
+        if (!password_verify($data["admin_password"], $user["data"]['password'])) {
+            $response = errorResponse("Your are not allowed to add a user only authentic super-admin can do");
+            sendResponse(400, $response);
         }
 
         if (empty($data['username']) || empty($data['password']) || empty($data['email'])) {
@@ -150,7 +160,7 @@ class UserController
     // --- Update User ---
     private function updateUser($data)
     {
-        $authUser = require_authenticated_user();
+        $authUser = require_authenticated_user(true);
 
         $targetUserId = ($authUser['data']["role"] === "super-admin")
             ? ($data["user_id"] ?? null)
@@ -161,6 +171,11 @@ class UserController
             sendResponse(400, $response);
             return;
         }
+        if (!password_verify($data["admin_password"], $authUser["data"]['password'])) {
+            $response = errorResponse("Your are not allowed to update a user only authentic super-admin can do  " . $data["admin_password"]);
+            sendResponse(400, $response);
+        }
+
 
         $allowedFields = ["username", "email", "status", "full_name", "password", "role"];
         $updateData = array_intersect_key($data, array_flip($allowedFields));
@@ -182,16 +197,53 @@ class UserController
         }
     }
 
+
+    private function updatePassword($data)
+    {
+        $authUser = require_authenticated_user(true);
+
+        $targetUserId = ($authUser['data']["role"] === "super-admin")
+            ? ($data["user_id"] ?? null)
+            : $authUser['data']["id"];
+
+        if ($authUser["role"] === "super-admin" && empty($targetUserId)) {
+            $response = errorResponse("Super admin must provide user_id");
+            sendResponse(400, $response);
+            return;
+        }
+        if (!password_verify($data["admin_password"], $authUser["data"]['password'])) {
+            $response = errorResponse("Your are not allowed to update a user only authentic super-admin can do  " . $data["admin_password"]);
+            sendResponse(400, $response);
+        }
+
+
+
+        $result = $this->userModel->updatePassword($targetUserId, $data["password"]);
+
+        if ($result["success"]) {
+            $response = successResponse("User updated successfully");
+            sendResponse(200, $response);
+        } else {
+            $response = errorResponse($result["message"] ?? "Update failed");
+            sendResponse(400, $response);
+        }
+    }
     // --- Deactivate User ---
     private function deactivateUser($data)
     {
-        $authUser = require_authenticated_user();
+        $authUser = require_authenticated_user(true);
 
         if (($authUser['data']["role"] ?? null) !== "super-admin") {
             $response = errorResponse("Only super-admin can deactivate users");
             sendResponse(403, $response);
             return;
         }
+
+        if (!password_verify($data["admin_password"], $authUser["data"]['password'])) {
+            $response = errorResponse("Your are not allowed to deactivate a user only authentic super-admin can do ");
+            sendResponse(400, $response);
+        }
+
 
         $userId = $data["user_id"] ?? null;
         if (empty($userId)) {
@@ -248,7 +300,7 @@ class UserController
         }
     }
 
-    private function getUsersByBranch()
+    private function getUsersByBranchWithPagination()
     {
         $authUser = require_authenticated_user();
 
@@ -279,6 +331,33 @@ class UserController
         }
     }
 
+
+    private function getUsersByBranch()
+    {
+        $authUser = require_authenticated_user();
+
+        if ($authUser["data"]["role"] === "super-admin") {
+            $branch_id = $_GET['branch_id'] ?? null;
+            if (empty($branch_id)) {
+                $response = errorResponse("branch_id parameter is required for super admin");
+                sendResponse(400, $response);
+                return;
+            }
+        } else {
+            $branch_id = $authUser['data']['branch_id'];
+        }
+
+        $include_archived = isset($_GET['include_archived']) && $_GET['include_archived'] === 'true';
+
+
+        $result = $this->userModel->getUsersByBranch($branch_id, $include_archived,);
+
+        if ($result['success']) {
+            sendResponse(200, $result);
+        } else {
+            sendResponse(400, $result);
+        }
+    }
     private function getAllUsers()
     {
         $authUser = require_authenticated_user();

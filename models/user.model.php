@@ -58,6 +58,29 @@ class UserModel
 
         return $response;
     }
+    public function branchAdminExists($branch_id)
+    {
+        try {
+            $query = "SELECT COUNT(*) as count 
+                  FROM " . $this->table_name . " 
+                  WHERE branch_id = :branch_id 
+                    AND role = 'branch-admin' 
+                    AND status = 'active'";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":branch_id", $branch_id);
+            $stmt->execute();
+
+            $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            // If count > 0, a branch-admin already exists
+            return isset($result['count']) && $result['count'] > 0;
+        } catch (PDOException $e) {
+            // Handle exception if needed
+            return false;
+        }
+    }
+
 
     /**
      * Create user account in the system
@@ -90,6 +113,9 @@ class UserModel
 
             if ($this->emailExists($data['email'])) {
                 return $this->errorResponse("Email already exists", ["email" => "This email is already registered"], "DUPLICATE_EMAIL");
+            }
+            if ($this->branchAdminExists($data["branch_id"])) {
+                return $this->errorResponse("Branch-admin already exists", ["role" => "There is already a branch admin"], "DUPLICATE_BRANCH_ADMIN");
             }
 
             // Sanitize data
@@ -126,17 +152,16 @@ class UserModel
                 ];
 
                 return $this->successResponse(
-                    "User {$data['username']} created successfully", 
+                    "User {$data['username']} created successfully",
                     $userData
                 );
             }
 
             return $this->errorResponse("Unable to create user", [], "DATABASE_ERROR");
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error occurred", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -227,15 +252,14 @@ class UserModel
             ];
 
             return $this->successResponse(
-                "Login successful", 
+                "Login successful",
                 $userData,
                 ["session_id" => session_id()]
             );
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Authentication error", 
-                ["database" => $e->getMessage()], 
+                "Authentication error",
+                ["database" => $e->getMessage()],
                 "AUTHENTICATION_ERROR"
             );
         }
@@ -244,10 +268,21 @@ class UserModel
     /**
      * Get user by ID
      */
-    public function getUser($user_id)
+    public function getUser($user_id, $include_password = false)
     {
         try {
-            $query = "SELECT * FROM " . $this->table_name . " WHERE id = ?";
+            // Get user with branch information using JOIN
+            $query = "SELECT 
+    u.*, 
+    b.name as branch_name,
+    b.country as branch_country,
+    b.city as branch_city,
+    b.address as branch_address,
+    b.status as branch_status,
+    b.is_main_branch
+FROM " . $this->table_name . " u
+LEFT JOIN branches b ON u.branch_id = b.id
+WHERE u.id = ?";
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$user_id]);
 
@@ -256,14 +291,15 @@ class UserModel
             if (empty($user)) {
                 return $this->errorResponse("User not found", [], "USER_NOT_FOUND");
             }
+            if (!$include_password) {
+                unset($user["password"]);
+            }
 
-            unset($user["password"]);
             return $this->successResponse("User retrieved successfully", $user);
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
@@ -342,16 +378,55 @@ class UserModel
             } else {
                 return $this->errorResponse("Update failed", [], "UPDATE_FAILED");
             }
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
     }
 
+    public function updatePassword($user_id, $password)
+    {
+        if (empty($user_id)) {
+            return $this->errorResponse("No data provided or invalid user ID", [], "INVALID_INPUT");
+        }
+
+        // Validate that only password is provided
+
+        try {
+            $password = validation_utils::sanitizeInput($password);
+
+            // Validate password strength
+            if (strlen($password) < 8) {
+                return $this->errorResponse("Password must be at least 8 characters long", [], "VALIDATION_ERROR");
+            }
+
+            // Hash the password
+            $hashedPassword = password_hash($password, PASSWORD_DEFAULT);
+
+            $query = "UPDATE {$this->table_name} SET password = :password WHERE id = :id";
+            $stmt = $this->conn->prepare($query);
+
+            $params = [
+                ':password' => $hashedPassword,
+                ':id' => $user_id
+            ];
+
+            if ($stmt->execute($params)) {
+                return $this->successResponse("Password updated successfully");
+            } else {
+                return $this->errorResponse("Password update failed", [], "UPDATE_FAILED");
+            }
+        } catch (PDOException $e) {
+            return $this->errorResponse(
+                "Database error",
+                ["database" => $e->getMessage()],
+                "DATABASE_ERROR"
+            );
+        }
+    }
     /**
      * Soft delete user (archive)
      */
@@ -371,11 +446,10 @@ class UserModel
             } else {
                 return $this->errorResponse("Failed to deactivate user", [], "DEACTIVATION_FAILED");
             }
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
@@ -394,22 +468,21 @@ class UserModel
             $query = "SELECT id, username, email, role, branch_id, status, created_at, last_login 
                       FROM {$this->table_name} 
                       WHERE id = ? AND status != 'archived'";
-            
+
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$user_id]);
-            
+
             $user = $stmt->fetch(PDO::FETCH_ASSOC);
-            
+
             if ($user) {
                 return $this->successResponse("User retrieved successfully", $user);
             } else {
                 return $this->errorResponse("User not found or archived", [], "USER_NOT_FOUND");
             }
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
@@ -428,7 +501,7 @@ class UserModel
             if ($include_archived) {
                 $query = "SELECT id, username, email, role, branch_id, status, created_at, last_login 
                           FROM {$this->table_name} 
-                          WHERE branch_id = ? 
+                          WHERE branch_id = ?  
                           ORDER BY created_at DESC";
             } else {
                 $query = "SELECT id, username, email, role, branch_id, status, created_at, last_login 
@@ -436,22 +509,21 @@ class UserModel
                           WHERE branch_id = ? AND status != 'archived' 
                           ORDER BY created_at DESC";
             }
-            
+
             $stmt = $this->conn->prepare($query);
             $stmt->execute([$branch_id]);
-            
+
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
+
             return $this->successResponse(
-                "Users retrieved successfully", 
+                "Users retrieved successfully",
                 $users,
                 ["count" => count($users)]
             );
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
@@ -468,19 +540,19 @@ class UserModel
 
         try {
             $offset = ($page - 1) * $limit;
-            
+
             // Count total records
             if ($include_archived) {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} WHERE branch_id = ?";
             } else {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} WHERE branch_id = ? AND status != 'archived'";
             }
-            
+
             $countStmt = $this->conn->prepare($countQuery);
             $countStmt->execute([$branch_id]);
             $totalCount = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
             $totalPages = ceil($totalCount / $limit);
-            
+
             // Get paginated data
             if ($include_archived) {
                 $query = "SELECT id, username, email, role, branch_id, status, created_at, last_login 
@@ -495,15 +567,15 @@ class UserModel
                           ORDER BY created_at DESC 
                           LIMIT ? OFFSET ?";
             }
-            
+
             $stmt = $this->conn->prepare($query);
             $stmt->bindValue(1, $branch_id, PDO::PARAM_INT);
             $stmt->bindValue(2, $limit, PDO::PARAM_INT);
             $stmt->bindValue(3, $offset, PDO::PARAM_INT);
             $stmt->execute();
-            
+
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
+
             $paginationMeta = [
                 'current_page' => (int)$page,
                 'per_page' => (int)$limit,
@@ -512,17 +584,16 @@ class UserModel
                 'has_next' => $page < $totalPages,
                 'has_prev' => $page > 1
             ];
-            
+
             return $this->successResponse(
-                "Users retrieved successfully", 
+                "Users retrieved successfully",
                 $users,
                 $paginationMeta
             );
-
         } catch (PDOException $e) {
             return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
+                "Database error",
+                ["database" => $e->getMessage()],
                 "DATABASE_ERROR"
             );
         }
@@ -534,43 +605,42 @@ class UserModel
     public function getAllUsers($branch_id = null, $include_archived = false)
     {
         try {
-            $whereClause = "";
+            $whereClause = "WHERE 1=1";
             $params = [];
-            
+
             if ($branch_id) {
-                $whereClause = "WHERE branch_id = ?";
+                $whereClause .= " AND u.branch_id = ?";
                 $params[] = $branch_id;
-                
-                if (!$include_archived) {
-                    $whereClause .= " AND status != 'archived'";
-                }
-            } else {
-                if (!$include_archived) {
-                    $whereClause = "WHERE status != 'archived'";
-                }
             }
-            
-            $query = "SELECT id, username, email, role, branch_id, status, created_at, last_login 
-                      FROM {$this->table_name} 
-                      {$whereClause} 
-                      ORDER BY created_at DESC";
-            
+
+            if (!$include_archived) {
+                $whereClause .= " AND u.status != 'archived'";
+            }
+
+            $query = "SELECT u.id, u.username, u.email, u.role, u.branch_id, u.status, 
+                         u.created_at, u.last_login,
+                         b.name as branch_name, b.address as branch_address, 
+                         b.status as branch_status
+                  FROM {$this->table_name} u
+                  LEFT JOIN branches b ON u.branch_id = b.id
+                  {$whereClause} 
+                  ORDER BY u.created_at DESC";
+
             $stmt = $this->conn->prepare($query);
             $stmt->execute($params);
-            
+
             $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
-            return $this->successResponse(
-                "Users retrieved successfully", 
+
+            return successResponse(
+                "Users retrieved successfully",
                 $users,
                 ["count" => count($users)]
             );
-
         } catch (PDOException $e) {
-            return $this->errorResponse(
-                "Database error", 
-                ["database" => $e->getMessage()], 
-                "DATABASE_ERROR"
+            return errorResponse(
+                "Database error occurred while fetching users",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
             );
         }
     }

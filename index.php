@@ -62,7 +62,7 @@ function errorResponse($message = "", $errors = [], $code = null)
 }
 
 
-function require_authenticated_user(): array
+function require_authenticated_user($include_password = false): array
 {
     if (session_status() === PHP_SESSION_NONE) {
         session_start();
@@ -73,7 +73,7 @@ function require_authenticated_user(): array
     }
 
     $userModel = new UserModel();
-    $user = $userModel->getUser($_SESSION['user_id']);
+    $user = $userModel->getUser($_SESSION['user_id'], $include_password);
 
     if (!$user) {
         // User ID in session doesn't exist in DB
@@ -86,7 +86,7 @@ function require_authenticated_user(): array
 header("Content-Type: application/json; charset=UTF-8");
 header("Access-Control-Allow-Origin: http://localhost:3000");
 header("Access-Control-Allow-Credentials: true");
-header("Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS");
+header("Access-Control-Allow-Methods: GET, POST, PUT,PATCH, DELETE, OPTIONS");
 header("Access-Control-Allow-Headers: Content-Type, Access-Control-Allow-Headers, Authorization, X-Requested-With");
 
 // Handle preflight OPTIONS request
@@ -147,6 +147,11 @@ try {
             $controller = new EmployeeController();
             $controller->handleRequest($segments);
             break;
+        case 'salary':
+            require_once __DIR__ . '/controllers/salary_payment.controller.php';
+            $controller = new SalaryPaymentController();
+            $controller->handleRequest($segments);
+            break;
         case 'expenses':
             require_once __DIR__ . '/controllers/expense.controller.php';
             $controller = new ExpenseController();
@@ -155,6 +160,26 @@ try {
         case 'stocks':
             require_once __DIR__ . '/controllers/stock.controller.php';
             $controller = new StockController();
+            $controller->handleRequest($segments);
+            break;
+        case 'supplier-dues':
+            require_once __DIR__ . '/controllers/supplier_due.controller.php';
+            $controller = new SupplierDueController();
+            $controller->handleRequest($segments);
+            break;
+        case 'customer-dues':
+            require_once __DIR__ . '/controllers/customer_due.controller.php';
+            $controller = new CustomerDueController();
+            $controller->handleRequest($segments);
+            break;
+        case 'branch-dues':
+            require_once __DIR__ . '/controllers/branch_due_controller.php';
+            $controller = new BranchDueController();
+            $controller->handleRequest($segments);
+            break;
+        case 'due-payments':
+            require_once __DIR__ . '/controllers/due_payment.controller.php';
+            $controller = new DuePaymentController();
             $controller->handleRequest($segments);
             break;
         default:

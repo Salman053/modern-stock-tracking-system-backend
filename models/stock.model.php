@@ -34,7 +34,7 @@ class StockModel
                 return $validationResult;
             }
 
-            // Check stock availability
+            // Check stock availability for outgoing movements
             $auto_update = $data['auto_update_product'] ?? true;
             if ($auto_update && in_array($data["movement_type"], ['dispatch', 'transfer_out'])) {
                 $current_stock = $this->getProductQuantity($data['product_id']);
@@ -48,15 +48,18 @@ class StockModel
                 }
             }
 
+            // Calculate total amount
+            $data['total_amount'] = $data['quantity'] * $data['unit_price_per_meter'];
+
             // Insert stock movement
             $id = $this->insertStockMovement($data);
             if (!$id) {
                 throw new Exception("Failed to insert stock movement");
             }
 
-            // Update product quantity if auto_update is enabled
+            // Update product quantities if auto_update is enabled
             if ($auto_update) {
-                $this->updateProductStock($data['product_id'], $data['movement_type'], $data['quantity']);
+                $this->handleProductStockUpdate($data);
             }
 
             $this->conn->commit();
@@ -66,6 +69,7 @@ class StockModel
                 "product_id" => $data['product_id'],
                 "movement_type" => $data['movement_type'],
                 "quantity" => $data['quantity'],
+                "reference_branch_id" => $data['reference_branch_id'] ?? null,
                 "auto_updated_product" => $auto_update
             ]);
         } catch (Exception $e) {
@@ -88,9 +92,16 @@ class StockModel
 
             $old_movement = $existing_movement['data'];
 
-            // Revert old movement if it was auto-updated
+            // Revert previous stock updates if auto_update was enabled
             if ($old_movement['auto_update_product'] && $old_movement['status'] == 'completed') {
-                $this->revertStockUpdate($old_movement['product_id'], $old_movement['movement_type'], $old_movement['quantity']);
+                $this->revertStockUpdate($old_movement);
+            }
+
+            // Calculate total amount if quantity or unit price is updated
+            if (isset($data['quantity']) || isset($data['unit_price_per_meter'])) {
+                $quantity = $data['quantity'] ?? $old_movement['quantity'];
+                $unit_price = $data['unit_price_per_meter'] ?? $old_movement['unit_price_per_meter'];
+                $data['total_amount'] = $quantity * $unit_price;
             }
 
             // Update movement
@@ -102,9 +113,8 @@ class StockModel
             // Apply new quantity change if auto_update is enabled
             $auto_update = $data['auto_update_product'] ?? $old_movement['auto_update_product'];
             if ($auto_update) {
-                $new_movement_type = $data['movement_type'] ?? $old_movement['movement_type'];
-                $new_quantity = $data['quantity'] ?? $old_movement['quantity'];
-                $this->updateProductStock($old_movement['product_id'], $new_movement_type, $new_quantity);
+                $new_movement_data = array_merge($old_movement, $data);
+                $this->handleProductStockUpdate($new_movement_data);
             }
 
             $this->conn->commit();
@@ -130,7 +140,7 @@ class StockModel
 
             // Restore product quantity if movement was auto-updated
             if ($movement_data['auto_update_product'] && $movement_data['status'] == 'completed') {
-                $this->revertStockUpdate($movement_data['product_id'], $movement_data['movement_type'], $movement_data['quantity']);
+                $this->revertStockUpdate($movement_data);
             }
 
             // Update status to cancelled
@@ -158,12 +168,14 @@ class StockModel
             $query = "SELECT sm.*, 
                          u.username as created_by, 
                          b.name as branch_name,
+                         rb.name as reference_branch_name,
                          p.name as product_name,
                          p.type as product_type,
                          s.name as supplier_name
                       FROM {$this->table_name} sm
                       LEFT JOIN users u ON sm.user_id = u.id
                       LEFT JOIN branches b ON sm.branch_id = b.id
+                      LEFT JOIN branches rb ON sm.reference_branch_id = rb.id
                       LEFT JOIN products p ON sm.product_id = p.id
                       LEFT JOIN suppliers s ON sm.supplier_id = s.id
                       {$whereClause} 
@@ -190,12 +202,14 @@ class StockModel
             $query = "SELECT sm.*, 
                          u.username as created_by, 
                          b.name as branch_name,
+                         rb.name as reference_branch_name,
                          p.name as product_name,
                          p.type as product_type,
                          s.name as supplier_name
                       FROM {$this->table_name} sm
                       LEFT JOIN users u ON sm.user_id = u.id
                       LEFT JOIN branches b ON sm.branch_id = b.id
+                      LEFT JOIN branches rb ON sm.reference_branch_id = rb.id
                       LEFT JOIN products p ON sm.product_id = p.id
                       LEFT JOIN suppliers s ON sm.supplier_id = s.id
                       WHERE sm.id = ?";
@@ -259,7 +273,8 @@ class StockModel
                          movement_type,
                          COUNT(*) as movement_count,
                          SUM(quantity) as total_quantity,
-                         AVG(unit_price_per_meter) as avg_unit_price
+                         AVG(unit_price_per_meter) as avg_unit_price,
+                         SUM(total_amount) as total_amount
                       FROM {$this->table_name}
                       {$whereClause} 
                       GROUP BY movement_type
@@ -295,6 +310,11 @@ class StockModel
             return errorResponse("Invalid movement type", ["movement_type" => "Must be: " . implode(', ', $allowed_types)], "INVALID_MOVEMENT_TYPE");
         }
 
+        // Validate reference_branch_id for transfers
+        if (in_array($data["movement_type"], ['transfer_in', 'transfer_out']) && empty($data['reference_branch_id'])) {
+            return errorResponse("Reference branch required", ["reference_branch_id" => "Reference branch is required for transfer movements"], "MISSING_REFERENCE_BRANCH");
+        }
+
         // Validate existence of related entities
         if (!$this->entityExists('products', $data['product_id'])) {
             return errorResponse("Invalid product ID", [], "INVALID_PRODUCT");
@@ -306,6 +326,10 @@ class StockModel
 
         if (!$this->entityExists('branches', $data['branch_id'])) {
             return errorResponse("Invalid branch ID", [], "INVALID_BRANCH");
+        }
+
+        if (!empty($data['reference_branch_id']) && !$this->entityExists('branches', $data['reference_branch_id'])) {
+            return errorResponse("Invalid reference branch ID", [], "INVALID_REFERENCE_BRANCH");
         }
 
         if (!empty($data['supplier_id']) && !$this->entityExists('suppliers', $data['supplier_id'])) {
@@ -320,8 +344,10 @@ class StockModel
         $query = "INSERT INTO {$this->table_name} 
                  SET user_id = :user_id, branch_id = :branch_id, product_id = :product_id, 
                      movement_type = :movement_type, supplier_id = :supplier_id, 
+                     reference_branch_id = :reference_branch_id,
                      quantity = :quantity, unit_price_per_meter = :unit_price_per_meter, 
-                     paid_amount = :paid_amount, date = :date, notes = :notes,
+                     paid_amount = :paid_amount, total_amount = :total_amount,
+                     date = :date, notes = :notes,
                      auto_update_product = :auto_update_product, status = 'completed',
                      created_at = NOW()";
 
@@ -331,9 +357,11 @@ class StockModel
         $stmt->bindValue(":product_id", $data['product_id']);
         $stmt->bindValue(":movement_type", $data['movement_type']);
         $stmt->bindValue(":supplier_id", $data['supplier_id'] ?? null);
+        $stmt->bindValue(":reference_branch_id", $data['reference_branch_id'] ?? null);
         $stmt->bindValue(":quantity", $data['quantity']);
         $stmt->bindValue(":unit_price_per_meter", $data['unit_price_per_meter']);
         $stmt->bindValue(":paid_amount", $data['paid_amount']);
+        $stmt->bindValue(":total_amount", $data['total_amount']);
         $stmt->bindValue(":date", $data['date']);
         $stmt->bindValue(":notes", $data['notes'] ?? null);
         $stmt->bindValue(":auto_update_product", $data['auto_update_product'] ?? true);
@@ -343,7 +371,7 @@ class StockModel
 
     private function updateMovement($id, $data)
     {
-        $allowedFields = ["movement_type", "supplier_id", "quantity", "unit_price_per_meter", "paid_amount", "date", "notes", "auto_update_product"];
+        $allowedFields = ["movement_type", "supplier_id", "reference_branch_id", "quantity", "unit_price_per_meter", "paid_amount", "total_amount", "date", "notes", "auto_update_product"];
         $fields = [];
         $params = [":id" => $id];
 
@@ -369,63 +397,111 @@ class StockModel
         return $stmt->execute();
     }
 
-    private function updateProductStock($product_id, $movement_type, $quantity)
+    private function handleProductStockUpdate($data)
     {
-        $current_stock = $this->getProductQuantity($product_id);
-        $new_quantity = $this->calculateNewQuantity($current_stock, $movement_type, $quantity);
+        switch ($data['movement_type']) {
+            case 'arrival':
+            case 'transfer_in':
+                // Increase stock in current branch
+                $this->updateProductStock($data['product_id'], $data['branch_id'], 'increase', $data['quantity']);
+                break;
+                
+            case 'dispatch':
+                // Decrease stock from current branch
+                $this->updateProductStock($data['product_id'], $data['branch_id'], 'decrease', $data['quantity']);
+                break;
+                
+            case 'transfer_out':
+                // Decrease stock from current branch and increase in reference branch
+                $this->updateProductStock($data['product_id'], $data['branch_id'], 'decrease', $data['quantity']);
+                if (!empty($data['reference_branch_id'])) {
+                    $this->updateProductStock($data['product_id'], $data['reference_branch_id'], 'increase', $data['quantity']);
+                }
+                break;
+                
+            case 'adjustment':
+                // Set specific quantity (you might want to handle this differently)
+                $this->adjustProductStock($data['product_id'], $data['branch_id'], $data['quantity']);
+                break;
+        }
+    }
+
+    private function revertStockUpdate($movement_data)
+    {
+        switch ($movement_data['movement_type']) {
+            case 'arrival':
+            case 'transfer_in':
+                // Revert: decrease stock from current branch
+                $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'decrease', $movement_data['quantity']);
+                break;
+                
+            case 'dispatch':
+                // Revert: increase stock in current branch
+                $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'increase', $movement_data['quantity']);
+                break;
+                
+            case 'transfer_out':
+                // Revert: increase stock in current branch and decrease from reference branch
+                $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'increase', $movement_data['quantity']);
+                if (!empty($movement_data['reference_branch_id'])) {
+                    $this->updateProductStock($movement_data['product_id'], $movement_data['reference_branch_id'], 'decrease', $movement_data['quantity']);
+                }
+                break;
+                
+            case 'adjustment':
+                // Revert adjustment (you might need to store original quantity)
+                // This is more complex and might require additional logic
+                break;
+        }
+    }
+
+    private function updateProductStock($product_id, $branch_id, $operation, $quantity)
+    {
+        $current_stock = $this->getProductQuantityByBranch($product_id, $branch_id);
         
-        $query = "UPDATE products SET quantity = :quantity, updated_at = NOW() WHERE id = :product_id";
+        switch ($operation) {
+            case 'increase':
+                $new_quantity = $current_stock + $quantity;
+                break;
+            case 'decrease':
+                $new_quantity = $current_stock - $quantity;
+                break;
+            default:
+                $new_quantity = $current_stock;
+        }
+        
+        $query = "UPDATE products SET quantity = :quantity, updated_at = NOW() 
+                  WHERE id = :product_id AND branch_id = :branch_id";
         $stmt = $this->conn->prepare($query);
         $stmt->bindValue(":quantity", $new_quantity);
         $stmt->bindValue(":product_id", $product_id);
+        $stmt->bindValue(":branch_id", $branch_id);
         return $stmt->execute();
     }
 
-    private function revertStockUpdate($product_id, $movement_type, $quantity)
+    private function adjustProductStock($product_id, $branch_id, $new_quantity)
     {
-        $current_stock = $this->getProductQuantity($product_id);
-        $reverted_quantity = $this->calculateReverseQuantity($current_stock, $movement_type, $quantity);
-        
-        $query = "UPDATE products SET quantity = :quantity, updated_at = NOW() WHERE id = :product_id";
+        $query = "UPDATE products SET quantity = :quantity, updated_at = NOW() 
+                  WHERE id = :product_id AND branch_id = :branch_id";
         $stmt = $this->conn->prepare($query);
-        $stmt->bindValue(":quantity", $reverted_quantity);
+        $stmt->bindValue(":quantity", $new_quantity);
         $stmt->bindValue(":product_id", $product_id);
+        $stmt->bindValue(":branch_id", $branch_id);
         return $stmt->execute();
     }
 
-    private function calculateNewQuantity($current_quantity, $movement_type, $movement_quantity)
+    private function getProductQuantityByBranch($product_id, $branch_id)
     {
-        switch ($movement_type) {
-            case 'arrival':
-            case 'transfer_in':
-                return $current_quantity + $movement_quantity;
-            case 'dispatch':
-            case 'transfer_out':
-                return $current_quantity - $movement_quantity;
-            case 'adjustment':
-                return $movement_quantity;
-            default:
-                return $current_quantity;
-        }
-    }
-
-    private function calculateReverseQuantity($current_quantity, $movement_type, $movement_quantity)
-    {
-        switch ($movement_type) {
-            case 'arrival':
-            case 'transfer_in':
-                return $current_quantity - $movement_quantity;
-            case 'dispatch':
-            case 'transfer_out':
-                return $current_quantity + $movement_quantity;
-            default:
-                return $current_quantity;
-        }
+        $query = "SELECT quantity FROM products WHERE id = ? AND branch_id = ? AND status != 'archived'";
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute([$product_id, $branch_id]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $result ? $result['quantity'] : 0;
     }
 
     private function buildWhereClause($branch_id, $product_id, $movement_type, $start_date, $end_date)
     {
-        $whereClause = "WHERE 1=1";
+        $whereClause = "WHERE sm.status != 'cancelled'";
         $params = [];
 
         if ($branch_id) {
