@@ -13,7 +13,181 @@ class SupplierDueModel
         $this->db = new Database();
         $this->conn = $this->db->getConnection();
     }
+/* --------------------------------------------------------------------
+    ADD SUPPLIER DUE (Alias for createSupplierDue for consistency)
+   -------------------------------------------------------------------- */
+public function addSupplierDue($data)
+{
+    return $this->createSupplierDue($data);
+}
 
+/* --------------------------------------------------------------------
+    UPDATE SUPPLIER DUE
+   -------------------------------------------------------------------- */
+public function updateSupplierDue($due_id, $data)
+{
+    try {
+        $this->conn->beginTransaction();
+
+        // Get current due
+        $current_due = $this->getSupplierDueById($due_id);
+        if (!$current_due['success']) {
+            $this->conn->rollBack();
+            return $current_due;
+        }
+
+        // Build dynamic update query
+        $allowedFields = ["total_amount", "paid_amount", "remaining_amount", "status", "due_date", "description"];
+        $fields = [];
+        $params = [":id" => $due_id];
+
+        foreach ($data as $key => $value) {
+            if (in_array($key, $allowedFields)) {
+                $fields[] = "$key = :$key";
+                $params[":$key"] = $value;
+            }
+        }
+
+        if (empty($fields)) {
+            $this->conn->rollBack();
+            return errorResponse("No valid fields to update", [], "NO_VALID_FIELDS");
+        }
+
+        $setClause = implode(", ", $fields);
+        $query = "UPDATE {$this->table_name} 
+                 SET $setClause, updated_at = NOW() 
+                 WHERE id = :id";
+
+        $stmt = $this->conn->prepare($query);
+        
+        foreach ($params as $key => $value) {
+            $stmt->bindValue($key, $value);
+        }
+
+        if (!$stmt->execute()) {
+            throw new Exception("Failed to update supplier due");
+        }
+
+        $this->conn->commit();
+        return successResponse("Supplier due updated successfully", ["due_id" => $due_id]);
+
+    } catch (Exception $e) {
+        $this->conn->rollBack();
+        return errorResponse(
+            "Database error occurred while updating supplier due", 
+            ["database" => $e->getMessage()], 
+            "DATABASE_EXCEPTION"
+        );
+    }
+}
+
+/* --------------------------------------------------------------------
+    CANCEL DUE
+   -------------------------------------------------------------------- */
+public function cancelDue($due_id)
+{
+    try {
+        $query = "UPDATE {$this->table_name} 
+                 SET status = 'cancelled', updated_at = NOW() 
+                 WHERE id = ? AND status != 'cancelled'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute([$due_id]);
+
+        if ($stmt->rowCount() > 0) {
+            return successResponse("Supplier due cancelled successfully");
+        } else {
+            return errorResponse("Supplier due not found or already cancelled", [], "DUE_NOT_FOUND");
+        }
+
+    } catch (PDOException $e) {
+        return errorResponse(
+            "Database error occurred while cancelling supplier due", 
+            ["database" => $e->getMessage()], 
+            "DATABASE_EXCEPTION"
+        );
+    }
+}
+
+/* --------------------------------------------------------------------
+    GET DUE BY STOCK MOVEMENT
+   -------------------------------------------------------------------- */
+public function getDueByStockMovement($stock_movement_id)
+{
+    if (empty($stock_movement_id)) {
+        return errorResponse("Stock movement ID is required", [], "MISSING_STOCK_MOVEMENT_ID");
+    }
+
+    try {
+        $query = "SELECT * FROM {$this->table_name} 
+                 WHERE stock_movement_id = ? AND status != 'cancelled'";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->execute([$stock_movement_id]);
+
+        $due = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($due) {
+            return successResponse("Supplier due retrieved successfully", $due);
+        } else {
+            return successResponse("No supplier due found for this stock movement", []);
+        }
+
+    } catch (PDOException $e) {
+        return errorResponse(
+            "Database error occurred while fetching supplier due", 
+            ["database" => $e->getMessage()], 
+            "DATABASE_EXCEPTION"
+        );
+    }
+}
+
+/* --------------------------------------------------------------------
+    CALCULATE REMAINING AMOUNT
+   -------------------------------------------------------------------- */
+private function calculateRemainingAmount($total_amount, $paid_amount)
+{
+    return $total_amount - $paid_amount;
+}
+
+/* --------------------------------------------------------------------
+    UPDATE DUE STATUS BASED ON PAYMENTS
+   -------------------------------------------------------------------- */
+private function updateDueStatus($due_id)
+{
+    try {
+        $current_due = $this->getSupplierDueById($due_id);
+        if (!$current_due['success']) {
+            return $current_due;
+        }
+
+        $due_data = $current_due['data'];
+        $remaining_amount = $this->calculateRemainingAmount($due_data['total_amount'], $due_data['paid_amount']);
+        
+        $new_status = 'pending';
+        if ($remaining_amount <= 0) {
+            $new_status = 'paid';
+        } elseif ($due_data['due_date'] < date('Y-m-d')) {
+            $new_status = 'overdue';
+        } elseif ($due_data['paid_amount'] > 0) {
+            $new_status = 'partial';
+        }
+
+        $query = "UPDATE {$this->table_name} 
+                 SET status = :status, remaining_amount = :remaining_amount, updated_at = NOW() 
+                 WHERE id = :due_id";
+
+        $stmt = $this->conn->prepare($query);
+        $stmt->bindParam(":status", $new_status);
+        $stmt->bindParam(":remaining_amount", $remaining_amount);
+        $stmt->bindParam(":due_id", $due_id);
+
+        return $stmt->execute();
+
+    } catch (PDOException $e) {
+        return false;
+    }
+}
     /* --------------------------------------------------------------------
         CREATE SUPPLIER DUE
        -------------------------------------------------------------------- */

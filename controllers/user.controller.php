@@ -162,7 +162,7 @@ class UserController
     {
         $authUser = require_authenticated_user(true);
 
-        $targetUserId = ($authUser['data']["role"] === "super-admin")
+        $targetUserId = ($authUser['data']["role"] === "super-admin" && $authUser["data"]["role"])
             ? ($data["user_id"] ?? null)
             : $authUser['data']["id"];
 
@@ -177,7 +177,7 @@ class UserController
         }
 
 
-        $allowedFields = ["username", "email", "status", "full_name", "password", "role"];
+        $allowedFields = ["username", "email", "status",  "password", "role"];
         $updateData = array_intersect_key($data, array_flip($allowedFields));
 
         if (empty($updateData)) {
