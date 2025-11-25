@@ -14,13 +14,11 @@ class SupplierModel
         $this->conn = $this->db->getConnection();
     }
 
-    /* --------------------------------------------------------------------
-        ADD SUPPLIER
-       -------------------------------------------------------------------- */
+   
     public function addSupplier($data)
     {
         try {
-            // Validation of required fields
+            
             $required_fields = ["name", "address", "phone", "cnic", "user_id", "branch_id"];
             $validateErrors = validation_utils::validateRequired($data, $required_fields);
 
@@ -28,7 +26,7 @@ class SupplierModel
                 return errorResponse("Validation failed", $validateErrors, "VALIDATION_ERROR");
             }
 
-            // Validate email if provided
+            
             if (!empty($data["email"]) && !validation_utils::validateEmail($data["email"])) {
                 return errorResponse(
                     "Invalid email format",
@@ -37,16 +35,16 @@ class SupplierModel
                 );
             }
 
-            // Validate CNIC format (13 digits)
-            if (!preg_match('/^\d{13}$/', $data["cnic"])) {
-                return errorResponse(
-                    "Invalid CNIC format",
-                    ["cnic" => "CNIC must be 13 digits without dashes"],
-                    "INVALID_CNIC"
-                );
-            }
+            
+            
+            
+            
+            
+            
+            
+            
 
-            // Validate phone format
+            
             if (!preg_match('/^\+?[\d\s\-\(\)]{10,}$/', $data["phone"])) {
                 return errorResponse(
                     "Invalid phone format",
@@ -55,7 +53,7 @@ class SupplierModel
                 );
             }
 
-            // Check if CNIC already exists
+            
             if ($this->cnicExists($data['cnic'])) {
                 return errorResponse(
                     "CNIC already exists",
@@ -64,7 +62,7 @@ class SupplierModel
                 );
             }
 
-            // Check if user and branch exist
+            
             if (!$this->userExists($data['user_id'])) {
                 return errorResponse("Invalid user ID", [], "INVALID_USER");
             }
@@ -73,7 +71,7 @@ class SupplierModel
                 return errorResponse("Invalid branch ID", [], "INVALID_BRANCH");
             }
 
-            // Sanitize data
+            
             $data = validation_utils::sanitizeInput($data);
 
             $query = "INSERT INTO " . $this->table_name . " 
@@ -123,64 +121,75 @@ class SupplierModel
             );
         }
     }
+public function getSuppliers($branch_id = null, $user_id = null, $include_archived = false)
+{
+    try {
+        $whereClause = "WHERE 1=1";
+        $params = [];
+        $types = [];
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIERS
-       -------------------------------------------------------------------- */
-    public function getSuppliers($branch_id = null, $user_id = null, $include_archived = false)
-    {
-        try {
-            $whereClause = "WHERE 1=1";
-            $params = [];
-
-            if ($branch_id) {
-                $whereClause .= " AND s.branch_id = :branch_id";
-                $params[":branch_id"] = $branch_id;
-            }
-
-            if ($user_id) {
-                $whereClause .= " AND s.user_id = :user_id";
-                $params[":user_id"] = $user_id;
-            }
-
-            if (!$include_archived) {
-                $whereClause .= " AND s.status != 'archived'";
-            }
-
-            $query = "SELECT s.*, u.username as created_by, b.name as branch_name 
-                      FROM {$this->table_name} s
-                      LEFT JOIN users u ON s.user_id = u.id
-                      LEFT JOIN branches b ON s.branch_id = b.id
-                      {$whereClause} 
-                      ORDER BY s.created_at DESC";
-
-            $stmt = $this->conn->prepare($query);
-
-            foreach ($params as $key => $value) {
-                $stmt->bindValue($key, $value);
-            }
-
-            $stmt->execute();
-
-            $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-            return successResponse(
-                "Suppliers retrieved successfully",
-                $suppliers,
-                ["count" => count($suppliers)]
-            );
-        } catch (PDOException $e) {
-            return errorResponse(
-                "Database error occurred while fetching suppliers",
-                ["database" => $e->getMessage()],
-                "DATABASE_EXCEPTION"
-            );
+        // Branch filter
+        if ($branch_id) {
+            $whereClause .= " AND s.branch_id = :branch_id";
+            $params[":branch_id"] = $branch_id;
+            $types[":branch_id"] = PDO::PARAM_INT;
         }
-    }
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIER BY ID
-       -------------------------------------------------------------------- */
+        // User filter
+        if ($user_id) {
+            $whereClause .= " AND s.user_id = :user_id";
+            $params[":user_id"] = $user_id;
+            $types[":user_id"] = PDO::PARAM_INT;
+        }
+
+        // Status filter - exclude archived unless explicitly included
+        if (!$include_archived) {
+            $whereClause .= " AND s.status != 'archived'";
+        }
+
+        $query = "SELECT 
+                    s.*, 
+                    u.username as created_by, 
+                    b.name as branch_name 
+                  FROM {$this->table_name} s
+                  LEFT JOIN users u ON s.user_id = u.id
+                  LEFT JOIN branches b ON s.branch_id = b.id
+                  {$whereClause} 
+                  ORDER BY s.created_at DESC";
+
+        $stmt = $this->conn->prepare($query);
+
+        // Bind parameters with types for better security
+        foreach ($params as $key => $value) {
+            $type = $types[$key] ?? PDO::PARAM_STR;
+            $stmt->bindValue($key, $value, $type);
+        }
+
+        $stmt->execute();
+        $suppliers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return successResponse(
+            "Suppliers retrieved successfully",
+            $suppliers,
+            [
+                "count" => count($suppliers),
+                "filters" => [
+                    "branch_id" => $branch_id,
+                    "user_id" => $user_id,
+                    "include_archived" => $include_archived
+                ]
+            ]
+        );
+
+    } catch (PDOException $e) {
+        error_log("Supplier fetch error: " . $e->getMessage());
+        return errorResponse(
+            "Database error occurred while fetching suppliers",
+            ["database" => $e->getMessage()],
+            "DATABASE_EXCEPTION"
+        );
+    }
+}
     public function getSupplierById($id)
     {
         if (empty($id)) {
@@ -217,9 +226,7 @@ class SupplierModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        UPDATE SUPPLIER
-       -------------------------------------------------------------------- */
+   
     public function updateSupplier($id, $data)
     {
         if (empty($id)) {
@@ -231,16 +238,16 @@ class SupplierModel
         }
 
         try {
-            // Check if supplier exists
+            
             $existingSupplier = $this->getSupplierById($id);
             if (!$existingSupplier['success']) {
                 return $existingSupplier;
             }
 
-            // Sanitize data
+            
             $data = validation_utils::sanitizeInput($data);
 
-            // Build dynamic update query
+            
             $allowedFields = ["name", "address", "phone", "email", "is_permanent", "status"];
             $fields = [];
             $params = [":id" => $id];
@@ -285,9 +292,7 @@ class SupplierModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        DELETE SUPPLIER (SOFT DELETE)
-       -------------------------------------------------------------------- */
+   
     public function deleteSupplier($id)
     {
         if (empty($id)) {
@@ -295,7 +300,7 @@ class SupplierModel
         }
 
         try {
-            // Check if supplier exists
+            
             $existingSupplier = $this->getSupplierById($id);
             if (!$existingSupplier['success']) {
                 return $existingSupplier;
@@ -326,9 +331,7 @@ class SupplierModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIERS BY BRANCH WITH PAGINATION
-       -------------------------------------------------------------------- */
+   
     public function getSuppliersByBranchPaginated($branch_id, $page = 1, $limit = 10, $include_archived = false)
     {
         if (empty($branch_id)) {
@@ -338,7 +341,7 @@ class SupplierModel
         try {
             $offset = ($page - 1) * $limit;
 
-            // Count total records
+            
             if ($include_archived) {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} WHERE branch_id = :branch_id";
             } else {
@@ -351,7 +354,7 @@ class SupplierModel
             $totalCount = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
             $totalPages = ceil($totalCount / $limit);
 
-            // Get paginated data
+            
             if ($include_archived) {
                 $query = "SELECT s.*, u.username as created_by, b.name as branch_name 
                           FROM {$this->table_name} s

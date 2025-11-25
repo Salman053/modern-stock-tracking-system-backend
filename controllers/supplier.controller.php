@@ -15,6 +15,7 @@ class SupplierController
         $method = $_SERVER['REQUEST_METHOD'];
         $supplierId = $segments[4] ?? null;
 
+
         switch ($method) {
             case 'GET':
                 if ($supplierId === null) {
@@ -49,7 +50,6 @@ class SupplierController
                 return;
         }
     }
-
     private function handleGetSuppliers()
     {
         $user = require_authenticated_user();
@@ -59,10 +59,21 @@ class SupplierController
         $user_id = $_GET['user_id'] ?? null;
         $include_archived = isset($_GET['include_archived']) && $_GET['include_archived'] === 'true';
 
-        // Role-based access control
-        if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
-            $branch_id = $user['data']['branch_id']; // Restrict to user's branch
+        // Role-based access control - ONLY set branch_id if not provided and user is branch-admin
+        if ($user['data']['role'] === 'branch-admin') {
+            // Only use user's branch_id if no specific branch_id was requested
+            if ($branch_id === null) {
+                $branch_id = $user['data']['branch_id'];
+            } else {
+                // If branch_id is provided, verify it matches user's branch (security)
+                if ($branch_id != $user['data']['branch_id']) {
+                    $response = errorResponse("Access denied: You can only access suppliers from your branch");
+                    sendResponse(403, $response);
+                    return;
+                }
+            }
         }
+
 
         try {
             $result = $this->supplierModel->getSuppliers($branch_id, $user_id, $include_archived);
@@ -72,14 +83,11 @@ class SupplierController
             } else {
                 sendResponse(400, $result);
             }
-            return;
         } catch (Exception $e) {
             $response = errorResponse("Database error: " . $e->getMessage());
             sendResponse(500, $response);
-            return;
         }
     }
-
     private function handleGetSupplierById($supplierId)
     {
         $user = require_authenticated_user();
@@ -90,7 +98,7 @@ class SupplierController
             if ($result["success"]) {
                 // Check if user has access to this supplier
                 $supplierBranch = $result['data']['branch_id'] ?? null;
-                
+
                 if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
                     if ($supplierBranch !== $user['data']['branch_id']) {
                         $response = errorResponse("Access denied to this supplier");
@@ -122,7 +130,9 @@ class SupplierController
             return;
         }
 
-        $user = require_authenticated_user();
+
+
+        $user = require_authenticated_user(true);
 
         // Check if user has permission to add suppliers
         if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin") {
@@ -130,10 +140,15 @@ class SupplierController
             sendResponse(403, $response);
             return;
         }
+        if (!password_verify($data["admin_password"], $user["data"]["password"])) {
+            $response = errorResponse("Please provide authentic password");
+            sendResponse(400, $response);
+            return;
+        }
 
         // Set user_id and branch_id based on role
         $data['user_id'] = $user['data']['id'];
-        
+
         if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
             $data['branch_id'] = $user['data']['branch_id']; // Restrict to user's branch
         }
@@ -172,11 +187,15 @@ class SupplierController
             sendResponse(403, $response);
             return;
         }
+        if (!password_verify($data["admin_password"], $user["data"]["password"])) {
+            $response = errorResponse("Please provide authentic password");
+            sendResponse(400, $response);
+        }
 
         try {
             // First get the existing supplier to check permissions
             $existingSupplier = $this->supplierModel->getSupplierById($supplierId);
-            
+
             if (!$existingSupplier['success']) {
                 sendResponse(404, $existingSupplier);
                 return;
@@ -208,7 +227,7 @@ class SupplierController
 
     private function handleDeleteSupplier($supplierId)
     {
-        $user = require_authenticated_user();
+        $user = require_authenticated_user(true);
 
         if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin") {
             $response = errorResponse("Forbidden: Only admins can delete suppliers");
@@ -219,7 +238,7 @@ class SupplierController
         try {
             // First get the existing supplier to check permissions
             $existingSupplier = $this->supplierModel->getSupplierById($supplierId);
-            
+
             if (!$existingSupplier['success']) {
                 sendResponse(404, $existingSupplier);
                 return;

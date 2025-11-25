@@ -85,9 +85,8 @@ class SupplierDueController
             $result = $this->supplierDueModel->getSupplierDueById($dueId);
 
             if ($result["success"]) {
-                // Check if user has access to this due
                 $dueBranch = $result['data']['branch_id'] ?? null;
-                
+
                 if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
                     if ($dueBranch !== $user['data']['branch_id']) {
                         $response = errorResponse("Access denied to this supplier due");
@@ -172,7 +171,7 @@ class SupplierDueController
         try {
             // First get the existing due to check permissions
             $existingDue = $this->supplierDueModel->getSupplierDueById($dueId);
-            
+
             if (!$existingDue['success']) {
                 sendResponse(404, $existingDue);
                 return;

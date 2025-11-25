@@ -13,30 +13,26 @@ class SupplierDueModel
         $this->db = new Database();
         $this->conn = $this->db->getConnection();
     }
-/* --------------------------------------------------------------------
-    ADD SUPPLIER DUE (Alias for createSupplierDue for consistency)
-   -------------------------------------------------------------------- */
+
 public function addSupplierDue($data)
 {
     return $this->createSupplierDue($data);
 }
 
-/* --------------------------------------------------------------------
-    UPDATE SUPPLIER DUE
-   -------------------------------------------------------------------- */
+
 public function updateSupplierDue($due_id, $data)
 {
     try {
         $this->conn->beginTransaction();
 
-        // Get current due
+        
         $current_due = $this->getSupplierDueById($due_id);
         if (!$current_due['success']) {
             $this->conn->rollBack();
             return $current_due;
         }
 
-        // Build dynamic update query
+        
         $allowedFields = ["total_amount", "paid_amount", "remaining_amount", "status", "due_date", "description"];
         $fields = [];
         $params = [":id" => $due_id];
@@ -81,9 +77,7 @@ public function updateSupplierDue($due_id, $data)
     }
 }
 
-/* --------------------------------------------------------------------
-    CANCEL DUE
-   -------------------------------------------------------------------- */
+
 public function cancelDue($due_id)
 {
     try {
@@ -109,9 +103,7 @@ public function cancelDue($due_id)
     }
 }
 
-/* --------------------------------------------------------------------
-    GET DUE BY STOCK MOVEMENT
-   -------------------------------------------------------------------- */
+
 public function getDueByStockMovement($stock_movement_id)
 {
     if (empty($stock_movement_id)) {
@@ -142,17 +134,13 @@ public function getDueByStockMovement($stock_movement_id)
     }
 }
 
-/* --------------------------------------------------------------------
-    CALCULATE REMAINING AMOUNT
-   -------------------------------------------------------------------- */
+
 private function calculateRemainingAmount($total_amount, $paid_amount)
 {
     return $total_amount - $paid_amount;
 }
 
-/* --------------------------------------------------------------------
-    UPDATE DUE STATUS BASED ON PAYMENTS
-   -------------------------------------------------------------------- */
+
 private function updateDueStatus($due_id)
 {
     try {
@@ -188,16 +176,14 @@ private function updateDueStatus($due_id)
         return false;
     }
 }
-    /* --------------------------------------------------------------------
-        CREATE SUPPLIER DUE
-       -------------------------------------------------------------------- */
+   
     public function createSupplierDue($data)
     {
         try {
-            // Start transaction
+            
             $this->conn->beginTransaction();
 
-            // Validation of required fields
+            
             $required_fields = ["supplier_id", "branch_id", "stock_movement_id", "due_date", "total_amount"];
             $validateErrors = validation_utils::validateRequired($data, $required_fields);
 
@@ -206,13 +192,13 @@ private function updateDueStatus($due_id)
                 return errorResponse("Validation failed", $validateErrors, "VALIDATION_ERROR");
             }
 
-            // Validate amounts
+            
             if ($data["total_amount"] <= 0) {
                 $this->conn->rollBack();
                 return errorResponse("Total amount must be positive", [], "INVALID_AMOUNT");
             }
 
-            // Check if supplier, branch, and stock movement exist
+            
             if (!$this->supplierExists($data['supplier_id'])) {
                 $this->conn->rollBack();
                 return errorResponse("Invalid supplier ID", [], "INVALID_SUPPLIER");
@@ -228,16 +214,16 @@ private function updateDueStatus($due_id)
                 return errorResponse("Invalid stock movement ID", [], "INVALID_STOCK_MOVEMENT");
             }
 
-            // Check if due already exists for this stock movement
+            
             if ($this->dueExistsForStockMovement($data['stock_movement_id'])) {
                 $this->conn->rollBack();
                 return errorResponse("Due already exists for this stock movement", [], "DUPLICATE_DUE");
             }
 
-            // Sanitize data
+            
             $data = validation_utils::sanitizeInput($data);
 
-            // Insert supplier due
+            
             $query = "INSERT INTO " . $this->table_name . " 
                      SET supplier_id = :supplier_id, branch_id = :branch_id, 
                          stock_movement_id = :stock_movement_id, due_date = :due_date,
@@ -261,7 +247,7 @@ private function updateDueStatus($due_id)
 
             $due_id = $this->conn->lastInsertId();
 
-            // Commit transaction
+            
             $this->conn->commit();
 
             $dueData = [
@@ -287,9 +273,7 @@ private function updateDueStatus($due_id)
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIER DUES
-       -------------------------------------------------------------------- */
+   
     public function getSupplierDues($supplier_id = null, $branch_id = null, $status = null)
     {
         try {
@@ -352,16 +336,14 @@ private function updateDueStatus($due_id)
         }
     }
 
-    /* --------------------------------------------------------------------
-        UPDATE SUPPLIER DUE PAYMENT
-       -------------------------------------------------------------------- */
+   
     public function updatePayment($due_id, $payment_amount)
     {
         try {
-            // Start transaction
+            
             $this->conn->beginTransaction();
 
-            // Get current due
+            
             $current_due = $this->getSupplierDueById($due_id);
             if (!$current_due['success']) {
                 $this->conn->rollBack();
@@ -370,7 +352,7 @@ private function updateDueStatus($due_id)
 
             $due_data = $current_due['data'];
 
-            // Validate payment amount
+            
             if ($payment_amount <= 0) {
                 $this->conn->rollBack();
                 return errorResponse("Payment amount must be positive", [], "INVALID_PAYMENT_AMOUNT");
@@ -379,16 +361,16 @@ private function updateDueStatus($due_id)
             $new_paid_amount = $due_data['paid_amount'] + $payment_amount;
             $remaining_amount = $due_data['total_amount'] - $new_paid_amount;
 
-            // Determine new status
+            
             $new_status = 'partial';
             if ($remaining_amount <= 0) {
                 $new_status = 'paid';
-                $new_paid_amount = $due_data['total_amount']; // Don't overpay
+                $new_paid_amount = $due_data['total_amount']; 
             } elseif ($due_data['due_date'] < date('Y-m-d')) {
                 $new_status = 'overdue';
             }   
 
-            // Update supplier due
+            
             $query = "UPDATE {$this->table_name} 
                       SET paid_amount = :paid_amount, status = :status, updated_at = NOW() 
                       WHERE id = :due_id";
@@ -402,7 +384,7 @@ private function updateDueStatus($due_id)
                 throw new Exception("Failed to update supplier due payment");
             }
 
-            // Commit transaction
+            
             $this->conn->commit();
 
             $result_data = [
@@ -426,9 +408,7 @@ private function updateDueStatus($due_id)
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIER DUE BY ID
-       -------------------------------------------------------------------- */
+   
     public function getSupplierDueById($due_id)
     {
         if (empty($due_id)) {
@@ -466,9 +446,7 @@ private function updateDueStatus($due_id)
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET SUPPLIER DUE SUMMARY
-       -------------------------------------------------------------------- */
+   
     public function getSupplierDueSummary($branch_id = null)
     {
         try {
@@ -515,9 +493,7 @@ private function updateDueStatus($due_id)
         }
     }
 
-    /* --------------------------------------------------------------------
-        HELPER METHODS
-       -------------------------------------------------------------------- */
+   
     private function supplierExists($supplier_id)
     {
         $query = "SELECT id FROM suppliers WHERE id = ? AND status != 'archived'";

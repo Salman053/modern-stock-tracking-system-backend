@@ -217,7 +217,7 @@ class StockController
             'paid_amount' => $movementData['paid_amount'] ?? 0,
             'remaining_amount' => $movementData['remaining_amount'] ?? ($movementData['total_amount'] - ($movementData['paid_amount'] ?? 0)),
             'status' => ($movementData['remaining_amount'] ?? $movementData['total_amount']) > 0 ? 'pending' : 'paid',
-            'due_type' => 'stock_purchase',
+            'due_type' => 'purchase',
             'description' => "Stock arrival: " . ($movementData['notes'] ?? 'Product purchase')
         ];
 

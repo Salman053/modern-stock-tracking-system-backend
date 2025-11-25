@@ -16,7 +16,7 @@ class EmployeeModel
         $this->conn = $this->db->getConnection();
     }
 
-      public function addEmployee($data)
+    public function addEmployee($data)
     {
         try {
             // Validation of required fields
@@ -37,13 +37,13 @@ class EmployeeModel
             }
 
             // Validate CNIC format (13 digits)
-            if (!preg_match('/^\d{13}$/', $data["cnic"])) {
-                return errorResponse(
-                    "Invalid CNIC format",
-                    ["cnic" => "CNIC must be 13 digits without dashes"],
-                    "INVALID_CNIC"
-                );
-            }
+            // if (!preg_match('/^\d{13}$/', $data["cnic"])) {
+            //     return errorResponse(
+            //         "Invalid CNIC format",
+            //         ["cnic" => "CNIC must be 13 digits without dashes"],
+            //         "INVALID_CNIC"
+            //     );
+            // }
 
             // Validate phone format
             if (!preg_match('/^\+?[\d\s\-\(\)]{10,}$/', $data["phone"])) {
@@ -398,10 +398,10 @@ class EmployeeModel
             $employees = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $paginationMeta = [
-                'current_page' => (int)$page,
-                'per_page' => (int)$limit,
-                'total_employees' => (int)$totalCount,
-                'total_pages' => (int)$totalPages,
+                'current_page' => (int) $page,
+                'per_page' => (int) $limit,
+                'total_employees' => (int) $totalCount,
+                'total_pages' => (int) $totalPages,
                 'has_next' => $page < $totalPages,
                 'has_prev' => $page > 1
             ];

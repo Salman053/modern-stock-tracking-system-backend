@@ -14,9 +14,7 @@ class BranchDueModel
         $this->conn = $this->db->getConnection();
     }
 
-    /* --------------------------------------------------------------------
-        CREATE BRANCH DUE
-    -------------------------------------------------------------------- */
+   
     public function createBranchDue($data)
     {
         try {

@@ -177,10 +177,7 @@ class ExpenseModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET EXPENSE BY ID
-       -------------------------------------------------------------------- */
-    public function getExpenseById($id)
+       public function getExpenseById($id)
     {
         if (empty($id)) {
             return errorResponse("Expense ID is required", [], "MISSING_id");

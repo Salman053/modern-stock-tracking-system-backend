@@ -4,7 +4,8 @@ require_once __DIR__ . '/models/user.model.php';
 function sendResponse($statusCode, $data)
 {
     // Clear any existing output
-    if (ob_get_length()) ob_clean();
+    if (ob_get_length())
+        ob_clean();
 
     http_response_code($statusCode);
     header('Content-Type: application/json');

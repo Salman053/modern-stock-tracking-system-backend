@@ -114,7 +114,7 @@ class UserModel
             if ($this->emailExists($data['email'])) {
                 return $this->errorResponse("Email already exists", ["email" => "This email is already registered"], "DUPLICATE_EMAIL");
             }
-            if ($this->branchAdminExists($data["branch_id"])) {
+            if ($data["role"] === "branch-admin" && $this->branchAdminExists($data["branch_id"])) {
                 return $this->errorResponse("Branch-admin already exists", ["role" => "There is already a branch admin"], "DUPLICATE_BRANCH_ADMIN");
             }
 

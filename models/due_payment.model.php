@@ -64,12 +64,12 @@ class DuePaymentModel
             }
 
             // Validate payment_method if provided
-            $validPaymentMethods = ['cash', 'bank_transfer', 'cheque', 'card'];
+            $validPaymentMethods = ['cash', 'bank_transfer', 'cheque', 'card', 'digital_wallet'];
             if (!empty($data["payment_method"]) && !in_array($data["payment_method"], $validPaymentMethods)) {
                 $this->conn->rollBack();
                 return errorResponse(
                     "Invalid payment method",
-                    ["payment_method" => "Payment method must be cash, bank_transfer, cheque, or card"],
+                    ["payment_method" => "Payment method must be cash, bank_transfer, cheque, card, or digital_wallet"],
                     "INVALID_PAYMENT_METHOD"
                 );
             }
@@ -96,12 +96,18 @@ class DuePaymentModel
                 );
             }
 
+            // Calculate current remaining amount
+            $currentPaidAmount = floatval($dueDetails['paid_amount'] ?? 0);
+            $totalAmount = floatval($dueDetails['total_amount']);
+            $currentRemainingAmount = $totalAmount - $currentPaidAmount;
+
             // Validate payment amount against remaining amount
-            if (!$this->validatePaymentAmount($data['due_type'], $data['due_id'], $data['amount'])) {
+            $paymentAmount = floatval($data['amount']);
+            if ($paymentAmount > $currentRemainingAmount) {
                 $this->conn->rollBack();
                 return errorResponse(
-                    "Invalid payment amount",
-                    ["amount" => "Payment amount exceeds the remaining due amount"],
+                    "Payment amount (Rs. {$paymentAmount}) exceeds the remaining due amount (Rs. {$currentRemainingAmount})",
+                    ["amount" => "Payment amount (Rs. {$paymentAmount}) exceeds the remaining due amount (Rs. {$currentRemainingAmount})"],
                     "EXCEEDED_PAYMENT_AMOUNT"
                 );
             }
@@ -114,7 +120,7 @@ class DuePaymentModel
                      SET description = :description, payment_date = :payment_date, 
                          user_id = :user_id, branch_id = :branch_id, due_type = :due_type,
                          due_id = :due_id, amount = :amount, payment_method = :payment_method,
-                          created_at = NOW()";
+                         created_at = NOW()";
 
             $stmt = $this->conn->prepare($query);
 
@@ -141,8 +147,14 @@ class DuePaymentModel
 
             $paymentId = $this->conn->lastInsertId();
 
-            // Update the due record (increment paid_amount, decrement remaining_amount)
-            if (!$this->updateDueRecord($data['due_type'], $data['due_id'], $data['amount'])) {
+            // Update the due record with new paid amount and status
+            $newPaidAmount = $currentPaidAmount + $paymentAmount;
+            $newRemainingAmount = $totalAmount - $newPaidAmount;
+
+            // Determine new status
+            $newStatus = $this->calculateDueStatus($newPaidAmount, $totalAmount);
+
+            if (!$this->updateDueRecord($data['due_type'], $data['due_id'], $newPaidAmount, $newRemainingAmount, $newStatus)) {
                 $this->conn->rollBack();
                 return errorResponse(
                     "Failed to update due record",
@@ -156,12 +168,16 @@ class DuePaymentModel
 
             $paymentData = [
                 "id" => $paymentId,
+                "description" => $description,
                 "payment_date" => $data['payment_date'],
                 "due_type" => $data['due_type'],
                 "due_id" => $data['due_id'],
                 "amount" => $data['amount'],
                 "payment_method" => $payment_method,
-                "branch_id" => $data['branch_id']
+                "user_id" => $data['user_id'],
+                "branch_id" => $data['branch_id'],
+                "due_status_after_payment" => $newStatus,
+                "remaining_amount_after_payment" => $newRemainingAmount
             ];
 
             return successResponse(
@@ -178,9 +194,7 @@ class DuePaymentModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        UPDATE DUE PAYMENT
-       -------------------------------------------------------------------- */
+
     public function updateDuePayment($id, $data)
     {
         $this->conn->beginTransaction();
@@ -196,7 +210,6 @@ class DuePaymentModel
                 return errorResponse("No data provided for update", [], "MISSING_UPDATE_DATA");
             }
 
-            // Check if payment exists and get current payment details
             $existingPayment = $this->getDuePaymentById($id);
             if (!$existingPayment['success']) {
                 $this->conn->rollBack();
@@ -205,7 +218,6 @@ class DuePaymentModel
 
             $currentPayment = $existingPayment['data'];
 
-            // Validate amount if provided
             if (isset($data["amount"]) && $data["amount"] <= 0) {
                 $this->conn->rollBack();
                 return errorResponse(
@@ -215,7 +227,6 @@ class DuePaymentModel
                 );
             }
 
-            // Validate date if provided
             if (isset($data["payment_date"]) && !validation_utils::validateDate($data["payment_date"])) {
                 $this->conn->rollBack();
                 return errorResponse(
@@ -225,37 +236,62 @@ class DuePaymentModel
                 );
             }
 
-            // If amount is being updated, validate against due record
             if (isset($data["amount"])) {
-                $amountDifference = $data["amount"] - $currentPayment["amount"];
+                $oldAmount = floatval($currentPayment["amount"]);
+                $newAmount = floatval($data["amount"]);
 
-                if ($amountDifference > 0) {
-                    // Check if we can add more payment
-                    if (!$this->validatePaymentAmount($currentPayment['due_type'], $currentPayment['due_id'], $amountDifference)) {
+                if ($oldAmount != $newAmount) {
+                    $dueDetails = $this->getDueDetails($currentPayment['due_type'], $currentPayment['due_id']);
+                    if (!$dueDetails) {
+                        $this->conn->rollBack();
+                        return errorResponse(
+                            "Due record not found",
+                            [],
+                            "DUE_NOT_FOUND"
+                        );
+                    }
+
+                    $amountDifference = $newAmount - $oldAmount;
+
+                    $currentPaidAmount = floatval($dueDetails['paid_amount'] ?? 0);
+                    $totalAmount = floatval($dueDetails['total_amount']);
+
+                    $newPaidAmount = $currentPaidAmount + $amountDifference;
+                    $newRemainingAmount = $totalAmount - $newPaidAmount;
+
+                    if ($newPaidAmount < 0) {
+                        $this->conn->rollBack();
+                        return errorResponse(
+                            "Invalid payment amount adjustment",
+                            ["amount" => "Payment adjustment would result in negative paid amount"],
+                            "INVALID_AMOUNT_ADJUSTMENT"
+                        );
+                    }
+
+                    if ($newPaidAmount > $totalAmount) {
                         $this->conn->rollBack();
                         return errorResponse(
                             "Invalid payment amount",
-                            ["amount" => "Updated payment amount exceeds the remaining due amount"],
+                            ["amount" => "Updated payment amount would exceed total due amount"],
                             "EXCEEDED_PAYMENT_AMOUNT"
                         );
                     }
-                }
 
-                // Update due record with the difference
-                if (!$this->updateDueRecord($currentPayment['due_type'], $currentPayment['due_id'], $amountDifference)) {
-                    $this->conn->rollBack();
-                    return errorResponse(
-                        "Failed to update due record",
-                        [],
-                        "DUE_UPDATE_FAILED"
-                    );
+                    $newStatus = $this->calculateDueStatus($newPaidAmount, $totalAmount);
+
+                    if (!$this->updateDueRecord($currentPayment['due_type'], $currentPayment['due_id'], $newPaidAmount, $newRemainingAmount, $newStatus)) {
+                        $this->conn->rollBack();
+                        return errorResponse(
+                            "Failed to update due record",
+                            [],
+                            "DUE_UPDATE_FAILED"
+                        );
+                    }
                 }
             }
 
-            // Sanitize data
             $data = validation_utils::sanitizeInput($data);
 
-            // Build dynamic update query
             $allowedFields = ["description", "payment_date", "amount", "payment_method"];
             $fields = [];
             $params = [":id" => $id];
@@ -274,7 +310,7 @@ class DuePaymentModel
 
             $setClause = implode(", ", $fields);
             $query = "UPDATE {$this->table_name} 
-                      SET $setClause
+                      SET $setClause, updated_at = NOW()
                       WHERE id = :id";
 
             $stmt = $this->conn->prepare($query);
@@ -297,16 +333,12 @@ class DuePaymentModel
         } catch (PDOException $e) {
             $this->conn->rollBack();
             return errorResponse(
-                "Database error occurred while updating due payment",
+                $e->getMessage(),
                 ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
     }
-
-    /* --------------------------------------------------------------------
-        DELETE DUE PAYMENT
-       -------------------------------------------------------------------- */
     public function deleteDuePayment($id)
     {
         $this->conn->beginTransaction();
@@ -317,7 +349,6 @@ class DuePaymentModel
                 return errorResponse("Due payment ID is required", [], "MISSING_ID");
             }
 
-            // Check if payment exists and get current payment details
             $existingPayment = $this->getDuePaymentById($id);
             if (!$existingPayment['success']) {
                 $this->conn->rollBack();
@@ -326,18 +357,37 @@ class DuePaymentModel
 
             $currentPayment = $existingPayment['data'];
 
-            // Reverse the payment from the due record (decrement paid_amount, increment remaining_amount)
-            if (!$this->reverseDueRecordUpdate($currentPayment['due_type'], $currentPayment['due_id'], $currentPayment['amount'])) {
+            $dueDetails = $this->getDueDetails($currentPayment['due_type'], $currentPayment['due_id']);
+            if (!$dueDetails) {
                 $this->conn->rollBack();
                 return errorResponse(
-                    "Failed to reverse due record update",
+                    "Due record not found",
                     [],
-                    "DUE_REVERSE_FAILED"
+                    "DUE_NOT_FOUND"
+                );
+            }
+
+            $currentPaidAmount = floatval($dueDetails['paid_amount'] ?? 0);
+            $paymentAmount = floatval($currentPayment['amount']);
+            $totalAmount = floatval($dueDetails['total_amount']);
+
+            $newPaidAmount = $currentPaidAmount - $paymentAmount;
+            $newRemainingAmount = $totalAmount - $newPaidAmount;
+
+            // Determine new status
+            $newStatus = $this->calculateDueStatus($newPaidAmount, $totalAmount);
+
+            // Update the due record
+            if (!$this->updateDueRecord($currentPayment['due_type'], $currentPayment['due_id'], $newPaidAmount, $newRemainingAmount, $newStatus)) {
+                $this->conn->rollBack();
+                return errorResponse(
+                    "Failed to update due record",
+                    [],
+                    "DUE_UPDATE_FAILED"
                 );
             }
 
             $query = "DELETE FROM {$this->table_name} WHERE id = :id";
-
             $stmt = $this->conn->prepare($query);
             $stmt->bindParam(":id", $id);
 
@@ -361,29 +411,48 @@ class DuePaymentModel
             );
         }
     }
-
-    /* --------------------------------------------------------------------
-        VALIDATION HELPER METHODS
-       -------------------------------------------------------------------- */
-    private function userExists($user_id)
+    private function calculateDueStatus($paidAmount, $totalAmount)
     {
-        try {
-            $query = "SELECT id FROM users WHERE id = ? AND status = 'active'";
-            $stmt = $this->conn->prepare($query);
-            $stmt->execute([$user_id]);
-            return $stmt->rowCount() > 0;
-        } catch (PDOException $e) {
-            return false;
+        if ($paidAmount <= 0) {
+            return 'pending';
+        } elseif ($paidAmount >= $totalAmount) {
+            return 'paid';
+        } else {
+            return 'partial';
         }
     }
 
-    private function branchExists($branch_id)
+    private function updateDueRecord($due_type, $due_id, $paidAmount, $remainingAmount, $status)
     {
         try {
-            $query = "SELECT id FROM branches WHERE id = ? AND status = 'active'";
+            switch ($due_type) {
+                case 'supplier':
+                    $table = 'supplier_dues';
+                    break;
+                case 'customer':
+                    $table = 'customer_dues';
+                    break;
+                case 'branch':
+                    $table = 'branch_dues';
+                    break;
+                default:
+                    return false;
+            }
+
+            $query = "UPDATE {$table} 
+                      SET paid_amount = :paid_amount, 
+                          remaining_amount = :remaining_amount,
+                          status = :status,
+                          updated_at = NOW()
+                      WHERE id = :id";
+
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$branch_id]);
-            return $stmt->rowCount() > 0;
+            $stmt->bindParam(":paid_amount", $paidAmount);
+            $stmt->bindParam(":remaining_amount", $remainingAmount);
+            $stmt->bindParam(":status", $status);
+            $stmt->bindParam(":id", $due_id);
+
+            return $stmt->execute();
         } catch (PDOException $e) {
             return false;
         }
@@ -392,7 +461,6 @@ class DuePaymentModel
     private function getDueDetails($due_type, $due_id)
     {
         try {
-            // Determine which table to query based on due_type
             switch ($due_type) {
                 case 'supplier':
                     $table = 'supplier_dues';
@@ -416,110 +484,8 @@ class DuePaymentModel
         }
     }
 
-    private function validatePaymentAmount($due_type, $due_id, $payment_amount)
-    {
-        try {
-            $dueDetails = $this->getDueDetails($due_type, $due_id);
-
-            if (!$dueDetails) {
-                return false;
-            }
-
-            // Check if payment amount exceeds remaining amount
-            $remaining_amount = $dueDetails['remaining_amount'];
-
-            return $payment_amount <= $remaining_amount;
-        } catch (PDOException $e) {
-            return false;
-        }
-    }
-
-    private function updateDueRecord($due_type, $due_id, $payment_amount)
-    {
-        try {
-            // Determine which table to update based on due_type
-            switch ($due_type) {
-                case 'supplier':
-                    $table = 'supplier_dues';
-                    break;
-                case 'customer':
-                    $table = 'customer_dues';
-                    break;
-                case 'branch':
-                    $table = 'branch_dues';
-                    break;
-                default:
-                    return false;
-            }
-
-            // Update paid_amount and remaining_amount
-            $query = "UPDATE {$table} 
-                      SET paid_amount = paid_amount + :payment_amount,
-                          remaining_amount = remaining_amount - :payment_amount,
-                          status = CASE 
-                              WHEN (remaining_amount - :payment_amount) <= 0 THEN 'paid'
-                              ELSE 'partial'
-                          END,
-                          updated_at = NOW()
-                      WHERE id = :due_id";
-
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(":payment_amount", $payment_amount);
-            $stmt->bindParam(":due_id", $due_id);
-
-            return $stmt->execute();
-        } catch (PDOException $e) {
-            return false;
-        }
-    }
-
-    private function reverseDueRecordUpdate($due_type, $due_id, $payment_amount)
-    {
-        try {
-            // Determine which table to update based on due_type
-            switch ($due_type) {
-                case 'supplier':
-                    $table = 'supplier_dues';
-                    break;
-                case 'customer':
-                    $table = 'customer_dues';
-                    break;
-                case 'branch':
-                    $table = 'branch_dues';
-                    break;
-                default:
-                    return false;
-            }
-
-            // Reverse the payment (decrement paid_amount, increment remaining_amount)
-            $query = "UPDATE {$table} 
-                      SET paid_amount = paid_amount - :payment_amount,
-                          remaining_amount = remaining_amount + :payment_amount,
-                          status = CASE 
-                              WHEN (paid_amount - :payment_amount) <= 0 THEN 'pending'
-                              ELSE 'partial'
-                          END,
-                          updated_at = NOW()
-                      WHERE id = :due_id";
-
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(":payment_amount", $payment_amount);
-            $stmt->bindParam(":due_id", $due_id);
-
-            return $stmt->execute();
-        } catch (PDOException $e) {
-            return false;
-        }
-    }
-
-
-
     public function getDuePaymentById($id)
     {
-        if (empty($id)) {
-            return errorResponse("Due payment ID is required", [], "MISSING_ID");
-        }
-
         try {
             $query = "SELECT dp.*, u.username as created_by, b.name as branch_name 
                       FROM {$this->table_name} dp
@@ -550,6 +516,168 @@ class DuePaymentModel
         }
     }
 
+    private function userExists($user_id)
+    {
+        try {
+            $query = "SELECT id FROM users WHERE id = ? AND status = 'active'";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$user_id]);
+            return $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+
+    private function branchExists($branch_id)
+    {
+        try {
+            $query = "SELECT id FROM branches WHERE id = ? AND status = 'active'";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$branch_id]);
+            return $stmt->rowCount() > 0;
+        } catch (PDOException $e) {
+            return false;
+        }
+    }
+
+
+    public function getDuePayments($branch_id = null, $user_id = null, $due_type = null, $due_id = null)
+    {
+        try {
+            $query = "SELECT dp.*, u.username as created_by, b.name as branch_name 
+                      FROM {$this->table_name} dp
+                      LEFT JOIN users u ON dp.user_id = u.id AND u.status = 'active'
+                      LEFT JOIN branches b ON dp.branch_id = b.id AND b.status = 'active'
+                      WHERE 1=1";
+
+            $params = [];
+
+            if ($branch_id) {
+                $query .= " AND dp.branch_id = ?";
+                $params[] = $branch_id;
+            }
+
+            if ($user_id) {
+                $query .= " AND dp.user_id = ?";
+                $params[] = $user_id;
+            }
+
+            if ($due_type) {
+                $query .= " AND dp.due_type = ?";
+                $params[] = $due_type;
+            }
+
+            if ($due_id) {
+                $query .= " AND dp.due_id = ?";
+                $params[] = $due_id;
+            }
+
+            $query .= " ORDER BY dp.payment_date DESC, dp.created_at DESC";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute($params);
+
+            $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse("Due payments retrieved successfully", $payments);
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while fetching due payments",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+    public function getDuePaymentsByDateRange($start_date, $end_date, $branch_id = null, $due_type = null)
+    {
+        try {
+            if (!validation_utils::validateDate($start_date) || !validation_utils::validateDate($end_date)) {
+                return errorResponse("Invalid date format", [], "INVALID_DATE");
+            }
+
+            $query = "SELECT dp.*, u.username as created_by, b.name as branch_name 
+                  FROM {$this->table_name} dp
+                  LEFT JOIN users u ON dp.user_id = u.id AND u.status = 'active'
+                  LEFT JOIN branches b ON dp.branch_id = b.id AND b.status = 'active'
+                  WHERE dp.payment_date BETWEEN ? AND ?";
+
+            $params = [$start_date, $end_date];
+
+            if ($branch_id) {
+                $query .= " AND dp.branch_id = ?";
+                $params[] = $branch_id;
+            }
+
+            if ($due_type) {
+                $query .= " AND dp.due_type = ?";
+                $params[] = $due_type;
+            }
+
+            $query .= " ORDER BY dp.payment_date ASC, dp.created_at ASC";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute($params);
+
+            $payments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse("Due payments retrieved successfully", $payments);
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while fetching due payments",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
+    /* --------------------------------------------------------------------
+        GET DUE PAYMENTS SUMMARY
+       -------------------------------------------------------------------- */
+    public function getDuePaymentsSummary($branch_id = null, $start_date = null, $end_date = null)
+    {
+        try {
+            $query = "SELECT 
+                     COUNT(*) as total_payments,
+                     SUM(amount) as total_amount,
+                     due_type,
+                     payment_method,
+                     COUNT(DISTINCT due_id) as unique_dues,
+                     COUNT(DISTINCT user_id) as unique_users
+                  FROM {$this->table_name}
+                  WHERE 1=1";
+
+            $params = [];
+
+            if ($branch_id) {
+                $query .= " AND branch_id = ?";
+                $params[] = $branch_id;
+            }
+
+            if ($start_date && $end_date) {
+                if (!validation_utils::validateDate($start_date) || !validation_utils::validateDate($end_date)) {
+                    return errorResponse("Invalid date format", [], "INVALID_DATE");
+                }
+                $query .= " AND payment_date BETWEEN ? AND ?";
+                $params[] = $start_date;
+                $params[] = $end_date;
+            }
+
+            $query .= " GROUP BY due_type, payment_method";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute($params);
+
+            $summary = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse("Due payments summary retrieved successfully", $summary);
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while fetching due payments summary",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
 
     public function __destruct()
     {

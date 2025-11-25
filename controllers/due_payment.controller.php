@@ -15,6 +15,12 @@ class DuePaymentController
         $method = $_SERVER['REQUEST_METHOD'];
         $paymentId = $segments[4] ?? null;
 
+        // Check if this is a summary request
+        if (isset($segments[3]) && $segments[3] === 'summary') {
+            $this->handleGetSummary();
+            return;
+        }
+
         switch ($method) {
             case 'GET':
                 if ($paymentId === null) {
@@ -97,7 +103,7 @@ class DuePaymentController
             if ($result["success"]) {
                 // Check if user has access to this payment
                 $paymentBranch = $result['data']['branch_id'] ?? null;
-                
+
                 if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
                     if ($paymentBranch !== $user['data']['branch_id']) {
                         $response = errorResponse("Access denied to this due payment");
@@ -132,15 +138,15 @@ class DuePaymentController
         $user = require_authenticated_user();
 
         // Check if user has permission to add due payments
-        if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin") {
-            $response = errorResponse("Forbidden: Only admins can add due payments");
+        if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin" && $user['data']['role'] !== "staff") {
+            $response = errorResponse("Forbidden: Only super-admins, branch-admins, and staff can add due payments");
             sendResponse(403, $response);
             return;
         }
 
         // Set user_id and branch_id based on role
         $data['user_id'] = $user['data']['id'];
-        
+
         if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
             $data['branch_id'] = $user['data']['branch_id']; // Restrict to user's branch
         }
@@ -183,7 +189,7 @@ class DuePaymentController
         try {
             // First get the existing payment to check permissions
             $existingPayment = $this->duePaymentModel->getDuePaymentById($paymentId);
-            
+
             if (!$existingPayment['success']) {
                 sendResponse(404, $existingPayment);
                 return;
@@ -215,18 +221,31 @@ class DuePaymentController
 
     private function handleDeleteDuePayment($paymentId)
     {
-        $user = require_authenticated_user();
+        $data = json_decode(file_get_contents("php://input"), true);
+
+        if (empty($data)) {
+            $response = errorResponse("Invalid or empty JSON body");
+            sendResponse(400, $response);
+            return;
+        }
+
+        $user = require_authenticated_user(true);
 
         if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin") {
             $response = errorResponse("Forbidden: Only admins can delete due payments");
             sendResponse(403, $response);
             return;
         }
+        if (!password_verify($data["admin_password"], $user["data"]["password"])) {
+            $response = errorResponse("Invalid admin password");
+            sendResponse(401, $response);
+            return;
+        }
 
         try {
             // First get the existing payment to check permissions
             $existingPayment = $this->duePaymentModel->getDuePaymentById($paymentId);
-            
+
             if (!$existingPayment['success']) {
                 sendResponse(404, $existingPayment);
                 return;

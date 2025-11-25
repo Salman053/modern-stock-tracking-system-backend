@@ -142,7 +142,7 @@ public function getProducts($user_id = null, $branch_id = null, $status = null)
             return errorResponse("Product ID is required", [], "MISSING_PRODUCT_ID");
         }
 
-        $query = "SELECT * FROM {$this->table_name} WHERE id = :id AND status != 'archived' LIMIT 1";
+        $query = "SELECT * FROM {$this->table_name} WHERE id = :id  LIMIT 1";
 
         try {
             $stmt = $this->conn->prepare($query);
@@ -164,10 +164,6 @@ public function getProducts($user_id = null, $branch_id = null, $status = null)
             );
         }
     }
-
-    /* --------------------------------------------------------------------
-        UPDATE PRODUCT
-       -------------------------------------------------------------------- */
     public function updateProduct($id, $data)
     {
         if (empty($id)) {

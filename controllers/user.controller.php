@@ -131,8 +131,8 @@ class UserController
     {
         $user = require_authenticated_user(true);
 
-        if (($user['data']["role"] ?? null) !== "super-admin") {
-            $response = errorResponse("Forbidden. Only super-admin can register new users");
+        if (($user['data']["role"] ?? null) !== "super-admin" && ($user['data']["role"] ?? null) !== "branch-admin" ) {
+            $response = errorResponse("Forbidden. Only super-admin and branch-admin can register new users".$data["admin_password"]);
             sendResponse(403, $response);
             return;
         }
