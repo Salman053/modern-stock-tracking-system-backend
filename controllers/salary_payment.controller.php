@@ -13,27 +13,27 @@ class SalaryPaymentController
     public function handleRequest($segments)
     {
         $method = $_SERVER['REQUEST_METHOD'];
-        $paymentId = $segments[4] ?? null;
-        $action = $segments[5] ?? null;
+        $paymentId = $segments[3] ?? null;
+        $action = $segments[4] ?? null;
 
         switch ($method) {
             case 'GET':
                 if ($paymentId === null) {
-                    if ($action === 'summary') {
-                        $this->handleGetPaymentSummary();
-                    } else {
-                        $this->handleGetSalaryPayments();
-                    }
+                    $this->handleGetSalaryPayments();
                 } else {
                     if ($action === 'employee-summary') {
-                        $this->handleGetEmployeeSummary($paymentId); // paymentId is employee_id here
+                        $this->handleGetEmployeeSummary($paymentId);
                     } else {
                         $this->handleGetSalaryPaymentById($paymentId);
                     }
                 }
                 break;
             case 'POST':
-                $this->handleCreateSalaryPayment();
+                if ($action === 'summary') {
+                    $this->handleGetPaymentSummary();
+                } else {
+                    $this->handleCreateSalaryPayment();
+                }
                 break;
             case 'PUT':
             case 'PATCH':
@@ -64,6 +64,9 @@ class SalaryPaymentController
         $employee_id = $_GET['employee_id'] ?? null;
         $start_date = $_GET['start_date'] ?? null;
         $end_date = $_GET['end_date'] ?? null;
+        $month = $_GET['month'] ?? null;
+        $year = $_GET['year'] ?? null;
+        $include_archived = $_GET['include_archived'] ?? false;
 
         // Role-based access control
         if ($this->isBranchUser($user)) {
@@ -71,7 +74,15 @@ class SalaryPaymentController
         }
 
         try {
-            $result = $this->salaryPaymentModel->getSalaryPayments($branch_id, $employee_id, $start_date, $end_date);
+            $result = $this->salaryPaymentModel->getSalaryPayments(
+                $branch_id,
+                $employee_id,
+                $start_date,
+                $end_date,
+                $month,
+                $year,
+                $include_archived
+            );
             sendResponse($result["success"] ? 200 : 400, $result);
         } catch (Exception $e) {
             sendResponse(500, errorResponse("Database error: " . $e->getMessage()));
@@ -104,7 +115,8 @@ class SalaryPaymentController
     private function handleCreateSalaryPayment()
     {
         $data = $this->getJsonInput();
-        if (!$data) return;
+        if (!$data)
+            return;
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {
@@ -129,7 +141,8 @@ class SalaryPaymentController
     private function handleUpdateSalaryPayment($paymentId)
     {
         $data = $this->getJsonInput();
-        if (!$data) return;
+        if (!$data)
+            return;
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {
@@ -165,11 +178,16 @@ class SalaryPaymentController
     {
         $user = require_authenticated_user();
 
-        $branch_id = $_GET['branch_id'] ?? null;
-        $start_date = $_GET['start_date'] ?? null;
-        $end_date = $_GET['end_date'] ?? null;
+        $data = $this->getJsonInput();
+        if (!$data)
+            return;
 
-        // Role-based access control
+        $branch_id = $data['branch_id'] ?? null;
+        $start_date = $data['start_date'] ?? null;
+        $end_date = $data['end_date'] ?? null;
+        $month = $data['month'] ?? null;
+        $year = $data['year'] ?? null;
+
         if ($this->isBranchUser($user)) {
             $branch_id = $user['data']['branch_id'];
         }
@@ -180,7 +198,7 @@ class SalaryPaymentController
         }
 
         try {
-            $result = $this->salaryPaymentModel->getBranchPaymentSummary($branch_id, $start_date, $end_date);
+            $result = $this->salaryPaymentModel->getBranchPaymentSummary($branch_id, $start_date, $end_date, $month, $year);
             sendResponse($result["success"] ? 200 : 400, $result);
         } catch (Exception $e) {
             sendResponse(500, errorResponse("Database error: " . $e->getMessage()));
@@ -206,8 +224,8 @@ class SalaryPaymentController
     private function getJsonInput()
     {
         $data = json_decode(file_get_contents("php://input"), true);
-        if (empty($data)) {
-            sendResponse(400, errorResponse("Invalid or empty JSON body"));
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            sendResponse(400, errorResponse("Invalid JSON body"));
             return null;
         }
         return $data;

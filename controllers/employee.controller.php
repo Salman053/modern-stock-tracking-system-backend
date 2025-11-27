@@ -55,16 +55,14 @@ class EmployeeController
     {
         $user = require_authenticated_user();
 
-        // Get query parameters for filtering
         $branch_id = $_GET['branch_id'] ?? null;
         $user_id = $_GET['user_id'] ?? null;
         $include_archived = isset($_GET['include_archived']) && $_GET['include_archived'] === 'true';
         $permanent_only = isset($_GET['permanent_only']) && $_GET['permanent_only'] === 'true';
         $designation = $_GET['designation'] ?? null;
 
-        // Role-based access control
         if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
-            $branch_id = $user['data']['branch_id']; // Restrict to user's branch
+            $branch_id = $user['data']['branch_id'];
         }
 
         try {
@@ -99,7 +97,7 @@ class EmployeeController
             if ($result["success"]) {
                 // Check if user has access to this employee
                 $employeeBranch = $result['data']['branch_id'] ?? null;
-                
+
                 if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
                     if ($employeeBranch !== $user['data']['branch_id']) {
                         $response = errorResponse("Access denied to this employee");
@@ -142,7 +140,7 @@ class EmployeeController
 
         // Set user_id and branch_id based on role
         $data['user_id'] = $user['data']['id'];
-        
+
         if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
             $data['branch_id'] = $user['data']['branch_id']; // Restrict to user's branch
         }
@@ -185,7 +183,7 @@ class EmployeeController
         try {
             // First get the existing employee to check permissions
             $existingEmployee = $this->employeeModel->getEmployeeById($employeeId);
-            
+
             if (!$existingEmployee['success']) {
                 sendResponse(404, $existingEmployee);
                 return;
@@ -217,7 +215,8 @@ class EmployeeController
 
     private function handleDeleteEmployee($employeeId)
     {
-        $user = require_authenticated_user();
+        $data = json_decode(file_get_contents("php://input"), true);
+        $user = require_authenticated_user(true);
 
         if ($user['data']['role'] !== "super-admin" && $user['data']['role'] !== "branch-admin") {
             $response = errorResponse("Forbidden: Only admins can delete employees");
@@ -226,21 +225,26 @@ class EmployeeController
         }
 
         try {
-            // First get the existing employee to check permissions
+
             $existingEmployee = $this->employeeModel->getEmployeeById($employeeId);
-            
+
             if (!$existingEmployee['success']) {
                 sendResponse(404, $existingEmployee);
                 return;
             }
 
-            // Check branch access for branch-admin
+
             if ($user['data']['role'] === 'branch-admin') {
                 if ($existingEmployee['data']['branch_id'] !== $user['data']['branch_id']) {
                     $response = errorResponse("Access denied to delete this employee");
                     sendResponse(403, $response);
                     return;
                 }
+            }
+            if (!password_verify($data["admin_password"], $user['data']['password'])) {
+                $response = errorResponse("Invalid admin password");
+                sendResponse(401, $response);
+                return;
             }
 
             $result = $this->employeeModel->deleteEmployee($employeeId);

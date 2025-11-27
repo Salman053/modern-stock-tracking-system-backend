@@ -135,9 +135,6 @@ class EmployeeModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET EMPLOYEES
-       -------------------------------------------------------------------- */
     public function getEmployees($branch_id = null, $user_id = null, $include_archived = false)
     {
         try {
@@ -304,50 +301,65 @@ class EmployeeModel
         }
     }
 
-    /* --------------------------------------------------------------------
-        DELETE EMPLOYEE (SOFT DELETE)
-       -------------------------------------------------------------------- */
+
     public function deleteEmployee($id)
     {
         if (empty($id)) {
-            return errorResponse("Employee ID is required", [], "MISSING_id");
+            return errorResponse("Employee ID is required", [], "MISSING_ID");
         }
 
         try {
-            // Check if employee exists
+
             $existingEmployee = $this->getEmployeeById($id);
             if (!$existingEmployee['success']) {
                 return $existingEmployee;
             }
 
-            $query = "UPDATE {$this->table_name} 
-                      SET status = 'archived', updated_at = NOW() 
-                      WHERE id = :id";
 
-            $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(":id", $id);
+            $this->conn->beginTransaction();
 
-            if ($stmt->execute()) {
-                return successResponse("Employee archived successfully");
-            } else {
+
+            $deletePaymentsQuery = "DELETE FROM salary_payments WHERE employee_id = :employee_id";
+            $deletePaymentsStmt = $this->conn->prepare($deletePaymentsQuery);
+            $deletePaymentsStmt->bindParam(":employee_id", $id, PDO::PARAM_INT);
+
+            if (!$deletePaymentsStmt->execute()) {
+                $this->conn->rollBack();
                 return errorResponse(
-                    "Failed to archive employee",
+                    "Failed to delete related salary payments",
                     [],
-                    "UPDATE_FAILED"
+                    "DELETE_SALARY_PAYMENTS_FAILED"
+                );
+            }
+
+
+            $deleteEmployeeQuery = "DELETE FROM {$this->table_name} WHERE id = :id";
+            $deleteEmployeeStmt = $this->conn->prepare($deleteEmployeeQuery);
+            $deleteEmployeeStmt->bindParam(":id", $id, PDO::PARAM_INT);
+
+            if ($deleteEmployeeStmt->execute()) {
+                $this->conn->commit();
+                return successResponse("Employee and related salary payments deleted successfully");
+            } else {
+                $this->conn->rollBack();
+                return errorResponse(
+                    "Failed to delete employee",
+                    [],
+                    "DELETE_EMPLOYEE_FAILED"
                 );
             }
         } catch (PDOException $e) {
+            if ($this->conn->inTransaction()) {
+                $this->conn->rollBack();
+            }
             return errorResponse(
-                "Database error occurred while archiving employee",
+                "Database error occurred while deleting employee",
                 ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
     }
 
-    /* --------------------------------------------------------------------
-        GET EMPLOYEES BY BRANCH WITH PAGINATION
-       -------------------------------------------------------------------- */
     public function getEmployeesByBranchPaginated($branch_id, $page = 1, $limit = 10, $include_archived = false)
     {
         if (empty($branch_id)) {
