@@ -13,8 +13,8 @@ class SalaryPaymentController
     public function handleRequest($segments)
     {
         $method = $_SERVER['REQUEST_METHOD'];
-        $paymentId = $segments[3] ?? null;
-        $action = $segments[4] ?? null;
+        $paymentId = $segments[4] ?? null;
+        $action = $segments[5] ?? null;
 
         switch ($method) {
             case 'GET':
@@ -105,7 +105,7 @@ class SalaryPaymentController
                 }
                 sendResponse(200, $result);
             } else {
-                sendResponse(404, errorResponse("Salary payment not found"));
+                sendResponse(404, errorResponse("Salary payment not found" . $user['data']['branch_id']));
             }
         } catch (Exception $e) {
             sendResponse(500, errorResponse("Database error: " . $e->getMessage()));
@@ -115,8 +115,10 @@ class SalaryPaymentController
     private function handleCreateSalaryPayment()
     {
         $data = $this->getJsonInput();
-        if (!$data)
+        if (!$data) {
+            sendResponse(400, errorResponse("Invalid request data"));
             return;
+        }
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {
@@ -141,8 +143,10 @@ class SalaryPaymentController
     private function handleUpdateSalaryPayment($paymentId)
     {
         $data = $this->getJsonInput();
-        if (!$data)
+        if (!$data) {
+            sendResponse(400, errorResponse("Invalid request data"));
             return;
+        }
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {

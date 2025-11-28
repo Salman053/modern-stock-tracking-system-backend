@@ -63,7 +63,7 @@ class StockModel
             }
 
             $this->conn->commit();
-            
+
             return successResponse("Stock movement recorded successfully", [
                 "id" => $id,
                 "product_id" => $data['product_id'],
@@ -389,7 +389,7 @@ class StockModel
         $setClause = implode(", ", $fields);
         $query = "UPDATE {$this->table_name} SET $setClause, updated_at = NOW() WHERE id = :id";
         $stmt = $this->conn->prepare($query);
-        
+
         foreach ($params as $key => $value) {
             $stmt->bindValue($key, $value);
         }
@@ -405,12 +405,12 @@ class StockModel
                 // Increase stock in current branch
                 $this->updateProductStock($data['product_id'], $data['branch_id'], 'increase', $data['quantity']);
                 break;
-                
+
             case 'dispatch':
                 // Decrease stock from current branch
                 $this->updateProductStock($data['product_id'], $data['branch_id'], 'decrease', $data['quantity']);
                 break;
-                
+
             case 'transfer_out':
                 // Decrease stock from current branch and increase in reference branch
                 $this->updateProductStock($data['product_id'], $data['branch_id'], 'decrease', $data['quantity']);
@@ -418,7 +418,7 @@ class StockModel
                     $this->updateProductStock($data['product_id'], $data['reference_branch_id'], 'increase', $data['quantity']);
                 }
                 break;
-                
+
             case 'adjustment':
                 // Set specific quantity (you might want to handle this differently)
                 $this->adjustProductStock($data['product_id'], $data['branch_id'], $data['quantity']);
@@ -434,12 +434,12 @@ class StockModel
                 // Revert: decrease stock from current branch
                 $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'decrease', $movement_data['quantity']);
                 break;
-                
+
             case 'dispatch':
                 // Revert: increase stock in current branch
                 $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'increase', $movement_data['quantity']);
                 break;
-                
+
             case 'transfer_out':
                 // Revert: increase stock in current branch and decrease from reference branch
                 $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'increase', $movement_data['quantity']);
@@ -447,7 +447,7 @@ class StockModel
                     $this->updateProductStock($movement_data['product_id'], $movement_data['reference_branch_id'], 'decrease', $movement_data['quantity']);
                 }
                 break;
-                
+
             case 'adjustment':
                 // Revert adjustment (you might need to store original quantity)
                 // This is more complex and might require additional logic
@@ -458,7 +458,7 @@ class StockModel
     private function updateProductStock($product_id, $branch_id, $operation, $quantity)
     {
         $current_stock = $this->getProductQuantityByBranch($product_id, $branch_id);
-        
+
         switch ($operation) {
             case 'increase':
                 $new_quantity = $current_stock + $quantity;
@@ -469,7 +469,7 @@ class StockModel
             default:
                 $new_quantity = $current_stock;
         }
-        
+
         $query = "UPDATE products SET quantity = :quantity, updated_at = NOW() 
                   WHERE id = :product_id AND branch_id = :branch_id";
         $stmt = $this->conn->prepare($query);
@@ -501,7 +501,7 @@ class StockModel
 
     private function buildWhereClause($branch_id, $product_id, $movement_type, $start_date, $end_date)
     {
-        $whereClause = "WHERE sm.status != 'cancelled'";
+        $whereClause = "WHERE 1=1";
         $params = [];
 
         if ($branch_id) {
@@ -545,7 +545,7 @@ class StockModel
     {
         $status_field = $table === 'users' ? 'active' : 'active';
         $status_check = $table === 'products' ? "status != 'archived'" : "status = '{$status_field}'";
-        
+
         $query = "SELECT id FROM {$table} WHERE id = ? AND {$status_check}";
         $stmt = $this->conn->prepare($query);
         $stmt->execute([$id]);
