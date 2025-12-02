@@ -11,14 +11,16 @@ class CustomerDueController
     }
 
     public function handleRequest($segments)
-    {   
+    {
         $method = $_SERVER['REQUEST_METHOD'];
         $dueId = $segments[4] ?? null;
 
         switch ($method) {
             case 'GET':
-                if ($dueId) $this->getById($dueId);
-                else $this->getList();
+                if ($dueId)
+                    $this->getById($dueId);
+                else
+                    $this->getList();
                 break;
 
             case 'POST':
@@ -27,8 +29,10 @@ class CustomerDueController
 
             case 'PUT':
             case 'PATCH':
-                if ($dueId) $this->updatePayment($dueId);
-                else sendResponse(400, errorResponse("Due ID required"));
+                if ($dueId)
+                    $this->updatePayment($dueId);
+                else
+                    sendResponse(400, errorResponse("Due ID required"));
                 break;
 
             default:
@@ -68,8 +72,10 @@ class CustomerDueController
             return;
         }
 
-        if ($user['data']['role'] !== 'super-admin' &&
-            $result['data']['branch_id'] !== $user['data']['branch_id']) {
+        if (
+            $user['data']['role'] !== 'super-admin' &&
+            $result['data']['branch_id'] !== $user['data']['branch_id']
+        ) {
             sendResponse(403, errorResponse("Access denied"));
             return;
         }
@@ -122,8 +128,10 @@ class CustomerDueController
             return;
         }
 
-        if ($user['data']['role'] === 'branch-admin' &&
-            $existing['data']['branch_id'] !== $user['data']['branch_id']) {
+        if (
+            $user['data']['role'] === 'branch-admin' &&
+            $existing['data']['branch_id'] !== $user['data']['branch_id']
+        ) {
             sendResponse(403, errorResponse("Access denied"));
             return;
         }

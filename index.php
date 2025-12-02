@@ -96,9 +96,6 @@ if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') {
     exit();
 }
 
-// --- URL Parsing and Routing Setup ---
-
-// 1. Get the path, stripped of the query string and leading/trailing slashes.
 $request_path = trim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/');
 
 $segments = array_filter(explode('/', $request_path));
@@ -125,7 +122,6 @@ try {
         case 'branches':
             require_once __DIR__ . '/controllers/branch.controller.php';
             $controller = new BranchController();
-            // Pass the full segments array as the controller expects it
             $controller->handleRequest($segments);
             break;
         case 'products':

@@ -14,7 +14,6 @@ class BranchDueModel
         $this->conn = $this->db->getConnection();
     }
 
-   
     public function createBranchDue($data)
     {
         try {
@@ -61,7 +60,7 @@ class BranchDueModel
             // Calculate remaining amount
             $paid_amount = $data['paid_amount'] ?? 0;
             $remaining_amount = $data['total_amount'] - $paid_amount;
-            
+
             // Determine status
             $status = $remaining_amount <= 0 ? 'paid' : 'pending';
 
@@ -117,7 +116,7 @@ class BranchDueModel
     /* --------------------------------------------------------------------
         GET ALL BRANCH DUES
     -------------------------------------------------------------------- */
-    public function getBranchDues($branch_id = null, $status = null)
+    public function getBranchDues($branch_id = null, $status = null, $supplier_id = null)
     {
         try {
             $where = "WHERE 1=1";
@@ -133,23 +132,30 @@ class BranchDueModel
                 $params[":status"] = $status;
             }
 
-            $query = "SELECT bd.*,
-                         b.name AS branch_name,
-                         sm.product_id,
-                         sm.quantity,
-                         sm.unit_price_per_meter,
-                         sm.movement_type,
-                         p.name as product_name,
-                         fb.name as from_branch_name,
-                         tb.name as to_branch_name
-                      FROM {$this->table_name} bd
-                      LEFT JOIN branches b ON bd.branch_id = b.id
-                      LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
-                      LEFT JOIN products p ON sm.product_id = p.id
-                      LEFT JOIN branches fb ON sm.branch_id = fb.id
-                      LEFT JOIN branches tb ON sm.to_branch_id = tb.id
-                      $where
-                      ORDER BY bd.due_date ASC, bd.created_at DESC";
+            // if ($supplier_id) {
+            //     $where .= " AND bd.supplier_id = :supplier_id";
+            //     $params[":supplier_id"] = $supplier_id;
+            // }
+            // $query = "SELECT * FROM " . $this->table_name . ";";
+            $query = "SELECT 
+                        bd.*,
+                        b.name AS branch_name,
+                        s.name AS supplier_name,
+                        sm.product_id,
+                        sm.quantity,
+                        sm.unit_price_per_meter,
+                        sm.movement_type,
+                        p.name as product_name,
+                        sm.reference_branch_id,
+                        fb.name as from_branch_name
+                    FROM {$this->table_name} bd
+                    LEFT JOIN branches b ON bd.branch_id = b.id
+                    LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                    LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                    LEFT JOIN products p ON sm.product_id = p.id
+                    LEFT JOIN branches fb ON sm.reference_branch_id = fb.id
+                    {$where}
+                    ORDER BY bd.due_date ASC, bd.created_at DESC";
 
             $stmt = $this->conn->prepare($query);
 
@@ -190,7 +196,10 @@ class BranchDueModel
 
             if ($payment_amount > $due['remaining_amount']) {
                 $this->conn->rollBack();
-                return errorResponse("Payment amount exceeds remaining amount", ["remaining_amount" => $due['remaining_amount']], "EXCESSIVE_PAYMENT");
+                return errorResponse("Payment amount exceeds remaining amount", [
+                    "remaining_amount" => $due['remaining_amount'],
+                    "payment_amount" => $payment_amount
+                ], "EXCESSIVE_PAYMENT");
             }
 
             $new_paid_amount = $due['paid_amount'] + $payment_amount;
@@ -200,10 +209,12 @@ class BranchDueModel
             $new_status = 'partial';
             if ($new_remaining_amount <= 0) {
                 $new_status = 'paid';
-                $new_paid_amount = $due['total_amount']; // Ensure we don't overpay
+                $new_paid_amount = $due['total_amount'];
                 $new_remaining_amount = 0;
             } elseif ($due['due_date'] < date('Y-m-d')) {
                 $new_status = 'overdue';
+            } elseif ($new_remaining_amount == $due['total_amount']) {
+                $new_status = 'pending';
             }
 
             $query = "UPDATE {$this->table_name}
@@ -227,9 +238,13 @@ class BranchDueModel
 
             return successResponse("Branch due payment updated successfully", [
                 "id" => $due_id,
-                "paid_amount" => $new_paid_amount,
-                "remaining_amount" => $new_remaining_amount,
-                "status" => $new_status
+                "total_amount" => $due['total_amount'],
+                "previous_paid_amount" => $due['paid_amount'],
+                "new_paid_amount" => $new_paid_amount,
+                "previous_remaining_amount" => $due['remaining_amount'],
+                "new_remaining_amount" => $new_remaining_amount,
+                "previous_status" => $due['status'],
+                "new_status" => $new_status
             ]);
 
         } catch (Exception $e) {
@@ -239,35 +254,128 @@ class BranchDueModel
     }
 
     /* --------------------------------------------------------------------
-        GET BRANCH DUE BY ID
+        GET BRANCH DUE BY STOCK MOVEMENT ID
     -------------------------------------------------------------------- */
-    public function getBranchDueById($due_id)
+    public function getDueByStockMovement($stock_movement_id)
     {
         try {
-            $query = "SELECT bd.*,
-                         b.name AS branch_name,
-                         sm.product_id,
-                         sm.quantity,
-                         sm.unit_price_per_meter,
-                         sm.movement_type,
-                         p.name as product_name,
-                         fb.name as from_branch_name,
-                         tb.name as to_branch_name
-                      FROM {$this->table_name} bd
-                      LEFT JOIN branches b ON bd.branch_id = b.id
-                      LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
-                      LEFT JOIN products p ON sm.product_id = p.id
-                      LEFT JOIN branches fb ON sm.branch_id = fb.id
-                      LEFT JOIN branches tb ON sm.to_branch_id = tb.id
-                      WHERE bd.id = ?";
+            $query = "SELECT 
+                        bd.*,
+                        b.name AS branch_name,
+                        s.name AS supplier_name,
+                        sm.product_id,
+                        sm.quantity,
+                        sm.unit_price_per_meter,
+                        sm.movement_type,
+                        p.name as product_name,
+                        sm.reference_branch_id,
+                        sm.reference_branch_id,
+                        fb.name as from_branch_name
+                    FROM {$this->table_name} bd
+                    LEFT JOIN branches b ON bd.branch_id = b.id
+                    LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                    LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                    LEFT JOIN products p ON sm.product_id = p.id
+                    LEFT JOIN branches fb ON sm.reference_branch_id = fb.id
+                    WHERE bd.stock_movement_id = :stock_movement_id";
 
             $stmt = $this->conn->prepare($query);
-            $stmt->execute([$due_id]);
+            $stmt->bindParam(":stock_movement_id", $stock_movement_id, PDO::PARAM_INT);
+            $stmt->execute();
 
             $due = $stmt->fetch(PDO::FETCH_ASSOC);
 
             if ($due) {
                 return successResponse("Branch due retrieved successfully", $due);
+            }
+
+            return errorResponse("Branch due not found for this stock movement", [], "DUE_NOT_FOUND");
+
+        } catch (PDOException $e) {
+            return errorResponse("Database error while fetching branch due", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
+        }
+    }
+
+    /* --------------------------------------------------------------------
+        GET BRANCH DUE BY ID
+    -------------------------------------------------------------------- */
+    public function getBranchDueById($due_id)
+    {
+        try {
+
+
+
+            $query = "SELECT 
+                         bd.*,
+                         b.name AS branch_name,
+                         s.name AS supplier_name,
+                         sm.product_id,
+                         sm.quantity,
+                         sm.unit_price_per_meter,
+                         sm.movement_type,
+                         p.name as product_name,
+                         sm.reference_branch_id,
+                         fb.name as from_branch_name
+                     FROM {$this->table_name} bd
+                     LEFT JOIN branches b ON bd.branch_id = b.id
+                     LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                     LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                     LEFT JOIN products p ON sm.product_id = p.id
+                     LEFT JOIN branches fb ON sm.reference_branch_id = fb.id
+
+                    WHERE bd.id = :due_id";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":due_id", $due_id, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $due = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if ($due) {
+                return successResponse("Branch due retrieved successfully", $due);
+            }
+
+            return errorResponse("Branch due not found", [], "DUE_NOT_FOUND");
+
+        } catch (PDOException $e) {
+            return errorResponse("Database error while fetching branch due", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
+        }
+    }
+
+    public function getBranchDuesById($due_id)
+    {
+        try {
+
+
+
+            $query = "SELECT 
+                         bd.*,
+                         b.name AS branch_name,
+                         s.name AS supplier_name,
+                         sm.product_id,
+                         sm.quantity,
+                         sm.unit_price_per_meter,
+                         sm.movement_type,
+                         p.name as product_name,
+                         sm.reference_branch_id,
+                         fb.name as from_branch_name
+                     FROM {$this->table_name} bd
+                     LEFT JOIN branches b ON bd.branch_id = b.id
+                     LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                     LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                     LEFT JOIN products p ON sm.product_id = p.id
+                     LEFT JOIN branches fb ON sm.reference_branch_id = fb.id
+
+                    WHERE bd.branch_id = :due_id";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":due_id", $due_id, PDO::PARAM_INT);
+            $stmt->execute();
+
+            $dues = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            if ($dues) {
+                return successResponse("Branch due retrieved successfully", $dues);
             }
 
             return errorResponse("Branch due not found", [], "DUE_NOT_FOUND");
@@ -292,12 +400,20 @@ class BranchDueModel
                 return $existing;
             }
 
-            // Delete related due payments first
-            $this->deleteDuePaymentsForBranchDue($due_id);
+            // Check if there are any payments made
+            if ($existing['data']['paid_amount'] > 0) {
+                $this->conn->rollBack();
+                return errorResponse(
+                    "Cannot delete due with payments made. Consider cancelling instead.",
+                    ["paid_amount" => $existing['data']['paid_amount']],
+                    "HAS_PAYMENTS"
+                );
+            }
 
+            // Delete the due
             $query = "DELETE FROM {$this->table_name} WHERE id = :id";
             $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(":id", $due_id);
+            $stmt->bindParam(":id", $due_id, PDO::PARAM_INT);
 
             if (!$stmt->execute()) {
                 throw new Exception("Failed to delete branch due");
@@ -313,9 +429,55 @@ class BranchDueModel
     }
 
     /* --------------------------------------------------------------------
+        CANCEL BRANCH DUE
+    -------------------------------------------------------------------- */
+    public function cancelBranchDue($due_id)
+    {
+        try {
+            $this->conn->beginTransaction();
+
+            // Check if due exists
+            $existing = $this->getBranchDueById($due_id);
+            if (!$existing['success']) {
+                $this->conn->rollBack();
+                return $existing;
+            }
+
+            // Only allow cancellation if no payments made or full refund scenario
+            if ($existing['data']['paid_amount'] > 0) {
+                $this->conn->rollBack();
+                return errorResponse(
+                    "Cannot cancel due with payments made. Process refund first.",
+                    ["paid_amount" => $existing['data']['paid_amount']],
+                    "HAS_PAYMENTS"
+                );
+            }
+
+            $query = "UPDATE {$this->table_name} 
+                      SET status = 'cancelled', 
+                          updated_at = NOW()
+                      WHERE id = :id AND status != 'cancelled'";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":id", $due_id, PDO::PARAM_INT);
+
+            if (!$stmt->execute() || $stmt->rowCount() === 0) {
+                throw new Exception("Failed to cancel branch due");
+            }
+
+            $this->conn->commit();
+            return successResponse("Branch due cancelled successfully");
+
+        } catch (Exception $e) {
+            $this->conn->rollBack();
+            return errorResponse("Database error while cancelling branch due", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
+        }
+    }
+
+    /* --------------------------------------------------------------------
         SUMMARY
     -------------------------------------------------------------------- */
-    public function getBranchDueSummary($branch_id = null)
+    public function getBranchDueSummary($branch_id = null, $supplier_id = null)
     {
         try {
             $where = "WHERE 1=1";
@@ -326,16 +488,21 @@ class BranchDueModel
                 $params[":branch_id"] = $branch_id;
             }
 
+            if ($supplier_id) {
+                $where .= " AND bd.supplier_id = :supplier_id";
+                $params[":supplier_id"] = $supplier_id;
+            }
+
             $query = "SELECT 
-                         bd.status,
-                         COUNT(*) AS count,
-                         SUM(bd.total_amount) AS total_amount,
-                         SUM(bd.paid_amount) AS total_paid,
-                         SUM(bd.remaining_amount) AS total_remaining
-                      FROM {$this->table_name} bd
-                      $where
-                      GROUP BY bd.status
-                      ORDER BY bd.status";
+                        bd.status,
+                        COUNT(*) AS count,
+                        SUM(bd.total_amount) AS total_amount,
+                        SUM(bd.paid_amount) AS total_paid,
+                        SUM(bd.remaining_amount) AS total_remaining
+                    FROM {$this->table_name} bd
+                    {$where}
+                    GROUP BY bd.status
+                    ORDER BY FIELD(bd.status, 'overdue', 'pending', 'partial', 'paid', 'cancelled')";
 
             $stmt = $this->conn->prepare($query);
 
@@ -350,17 +517,20 @@ class BranchDueModel
             $grand_total = 0;
             $grand_paid = 0;
             $grand_remaining = 0;
+            $total_count = 0;
+
             foreach ($summary as $item) {
-                $grand_total += $item['total_amount'];
-                $grand_paid += $item['total_paid'];
-                $grand_remaining += $item['total_remaining'];
+                $grand_total += (float) $item['total_amount'];
+                $grand_paid += (float) $item['total_paid'];
+                $grand_remaining += (float) $item['total_remaining'];
+                $total_count += (int) $item['count'];
             }
 
             return successResponse("Branch due summary retrieved successfully", $summary, [
                 "grand_total" => $grand_total,
                 "grand_paid" => $grand_paid,
                 "grand_remaining" => $grand_remaining,
-                "total_count" => array_sum(array_column($summary, 'count'))
+                "total_count" => $total_count
             ]);
 
         } catch (PDOException $e) {
@@ -371,10 +541,11 @@ class BranchDueModel
     /* --------------------------------------------------------------------
         GET OVERDUE DUES
     -------------------------------------------------------------------- */
-    public function getOverdueDues($branch_id = null)
+    public function getOverdueDues($branch_id = null, $supplier_id = null)
     {
         try {
-            $where = "WHERE bd.status IN ('pending', 'partial') AND bd.due_date < CURDATE()";
+            $where = "WHERE bd.status IN ('pending', 'partial') 
+                     AND bd.due_date < CURDATE()";
             $params = [];
 
             if ($branch_id) {
@@ -382,16 +553,25 @@ class BranchDueModel
                 $params[":branch_id"] = $branch_id;
             }
 
-            $query = "SELECT bd.*,
-                         b.name AS branch_name,
-                         sm.product_id,
-                         p.name as product_name
-                      FROM {$this->table_name} bd
-                      LEFT JOIN branches b ON bd.branch_id = b.id
-                      LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
-                      LEFT JOIN products p ON sm.product_id = p.id
-                      $where
-                      ORDER BY bd.due_date ASC";
+            if ($supplier_id) {
+                $where .= " AND bd.supplier_id = :supplier_id";
+                $params[":supplier_id"] = $supplier_id;
+            }
+
+            $query = "SELECT 
+                        bd.*,
+                        b.name AS branch_name,
+                        s.name AS supplier_name,
+                        sm.product_id,
+                        p.name as product_name,
+                        DATEDIFF(CURDATE(), bd.due_date) as days_overdue
+                    FROM {$this->table_name} bd
+                    LEFT JOIN branches b ON bd.branch_id = b.id
+                    LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                    LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                    LEFT JOIN products p ON sm.product_id = p.id
+                    {$where}
+                    ORDER BY bd.due_date ASC, days_overdue DESC";
 
             $stmt = $this->conn->prepare($query);
 
@@ -403,11 +583,38 @@ class BranchDueModel
             $overdue_dues = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             return successResponse("Overdue branch dues retrieved successfully", $overdue_dues, [
-                "count" => count($overdue_dues)
+                "count" => count($overdue_dues),
+                "total_overdue_amount" => array_sum(array_column($overdue_dues, 'remaining_amount'))
             ]);
 
         } catch (PDOException $e) {
             return errorResponse("Database error while fetching overdue dues", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
+        }
+    }
+
+    /* --------------------------------------------------------------------
+        UPDATE DUE STATUS BASED ON DATE
+    -------------------------------------------------------------------- */
+    public function updateOverdueStatuses()
+    {
+        try {
+            $query = "UPDATE {$this->table_name} 
+                      SET status = 'overdue',
+                          updated_at = NOW()
+                      WHERE status IN ('pending', 'partial') 
+                      AND due_date < CURDATE()";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute();
+
+            $updated_count = $stmt->rowCount();
+
+            return successResponse("Due statuses updated", [
+                "updated_count" => $updated_count
+            ]);
+
+        } catch (PDOException $e) {
+            return errorResponse("Database error while updating statuses", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
         }
     }
 
@@ -423,27 +630,64 @@ class BranchDueModel
 
     private function stockTransferExists($transfer_id)
     {
-        $stmt = $this->conn->prepare("SELECT id FROM stock_movements WHERE id = ? AND movement_type IN ('transfer_in', 'transfer_out')");
+        $stmt = $this->conn->prepare("SELECT id FROM stock_movements WHERE id = ?");
         $stmt->execute([$transfer_id]);
         return $stmt->rowCount() > 0;
     }
 
     private function dueExistsForTransfer($transfer_id)
     {
-        $stmt = $this->conn->prepare("SELECT id FROM {$this->table_name} WHERE stock_movement_id = ?");
+        $stmt = $this->conn->prepare("SELECT id FROM {$this->table_name} WHERE stock_movement_id = ? AND status != 'cancelled'");
         $stmt->execute([$transfer_id]);
         return $stmt->rowCount() > 0;
     }
 
-    private function deleteDuePaymentsForBranchDue($branch_due_id)
+    /* --------------------------------------------------------------------
+        GET DUES BY SUPPLIER
+    -------------------------------------------------------------------- */
+    public function getDuesBySupplier($supplier_id, $status = null)
     {
         try {
-            $query = "DELETE FROM due_payments WHERE due_type = 'branch' AND due_id = :branch_due_id";
+            $where = "WHERE bd.supplier_id = :supplier_id";
+            $params = [":supplier_id" => $supplier_id];
+
+            if ($status) {
+                $where .= " AND bd.status = :status";
+                $params[":status"] = $status;
+            }
+
+            $query = "SELECT 
+                        bd.*,
+                        b.name AS branch_name,
+                        s.name AS supplier_name,
+                        sm.product_id,
+                        sm.quantity,
+                        p.name as product_name
+                    FROM {$this->table_name} bd
+                    LEFT JOIN branches b ON bd.branch_id = b.id
+                    LEFT JOIN suppliers s ON bd.supplier_id = s.id
+                    LEFT JOIN stock_movements sm ON bd.stock_movement_id = sm.id
+                    LEFT JOIN products p ON sm.product_id = p.id
+                    {$where}
+                    ORDER BY bd.due_date ASC";
+
             $stmt = $this->conn->prepare($query);
-            $stmt->bindParam(":branch_due_id", $branch_due_id);
-            return $stmt->execute();
-        } catch (Exception $e) {
-            throw new Exception("Failed to delete due payments: " . $e->getMessage());
+
+            foreach ($params as $k => $v) {
+                $stmt->bindValue($k, $v);
+            }
+
+            $stmt->execute();
+            $dues = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse("Supplier dues retrieved successfully", $dues, [
+                "count" => count($dues),
+                "total_amount" => array_sum(array_column($dues, 'total_amount')),
+                "total_remaining" => array_sum(array_column($dues, 'remaining_amount'))
+            ]);
+
+        } catch (PDOException $e) {
+            return errorResponse("Database error while fetching supplier dues", ["database" => $e->getMessage()], "DATABASE_EXCEPTION");
         }
     }
 

@@ -1,4 +1,4 @@
-<?php 
+<?php
 require_once "models/stock.model.php";
 require_once "models/supplier_due.php";
 require_once "models/branch_due.model.php";
@@ -55,7 +55,8 @@ class StockController
     private function handleAddStockMovement()
     {
         $data = $this->getJsonInput();
-        if (!$data) return;
+        if (!$data)
+            return;
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {
@@ -93,13 +94,13 @@ class StockController
 
         try {
             $result = $this->stockModel->addStockMovement($data);
-            
+
             if ($result["success"]) {
                 // Handle automatic dues creation if auto_update is enabled
                 if ($data['auto_update_product']) {
                     $this->handleAutomaticDuesCreation($result["data"]["id"], $data);
                 }
-                
+
                 sendResponse(201, $result);
             } else {
                 sendResponse(400, $result);
@@ -112,7 +113,8 @@ class StockController
     private function handleUpdateStockMovement($movementId)
     {
         $data = $this->getJsonInput();
-        if (!$data) return;
+        if (!$data)
+            return;
 
         $user = require_authenticated_user();
         if (!$this->isAdmin($user)) {
@@ -142,7 +144,7 @@ class StockController
                     $quantity = $data['quantity'] ?? $oldData['quantity'];
                     $unitPrice = $data['unit_price_per_meter'] ?? $oldData['unit_price_per_meter'];
                     $data['total_amount'] = $quantity * $unitPrice;
-                    
+
                     // Recalculate remaining amount
                     $paidAmount = $data['paid_amount'] ?? $oldData['paid_amount'];
                     $data['remaining_amount'] = $data['total_amount'] - $paidAmount;
@@ -152,14 +154,14 @@ class StockController
 
         try {
             $result = $this->stockModel->updateStockMovement($movementId, $data);
-            
+
             if ($result["success"]) {
                 // Update related dues if auto_update was enabled
                 $autoUpdate = $data['auto_update_product'] ?? true;
                 if ($autoUpdate) {
                     $this->handleDuesUpdate($movementId, $data);
                 }
-                
+
                 sendResponse($result["success"] ? 200 : 400, $result);
             } else {
                 sendResponse(400, $result);
@@ -178,15 +180,18 @@ class StockController
         }
 
         try {
-            $result = $this->stockModel->cancelStockMovement($movementId);
-            
-            if ($result["success"]) {
-                // Cancel related dues
-                $this->handleDuesCancellation($movementId);
-                sendResponse(200, $result);
-            } else {
-                sendResponse(400, $result);
-            }
+
+
+
+            // $result = $this->stockModel->cancelStockMovement($movementId);
+
+            // if ($result["success"]) {
+            // Cancel related dues
+            $this->handleDuesCancellation($movementId);
+            sendResponse(200, ["success" => true, "message" => $movementId]);
+            // } else {
+            //     sendResponse(400, $result);
+            // }
         } catch (Exception $e) {
             sendResponse(500, errorResponse("Database error: " . $e->getMessage()));
         }
@@ -199,7 +204,7 @@ class StockController
         if ($movementData['movement_type'] === 'arrival' && !empty($movementData['supplier_id'])) {
             $this->createSupplierDue($stockMovementId, $movementData);
         }
-        
+
         // Create branch dues for transfer movements
         if (in_array($movementData['movement_type'], ['transfer_in', 'transfer_out']) && !empty($movementData['reference_branch_id'])) {
             $this->createBranchDue($stockMovementId, $movementData);
@@ -226,21 +231,33 @@ class StockController
 
     private function createBranchDue($stockMovementId, $movementData)
     {
+        // Calculate remaining
+        $paid = $movementData['paid_amount'] ?? 0;
+        $remaining = $movementData['remaining_amount'] ?? ($movementData['total_amount'] - $paid);
+
         $dueData = [
             'branch_id' => $movementData['reference_branch_id'],
             'supplier_id' => $movementData['supplier_id'] ?? null,
             'stock_movement_id' => $stockMovementId,
-            'due_date' => date('Y-m-d', strtotime('+15 days')), // 15 days for inter-branch
+            'due_date' => date('Y-m-d', strtotime('+15 days')), // Inter-branch credit terms
             'total_amount' => $movementData['total_amount'],
-            'paid_amount' => $movementData['paid_amount'] ?? 0,
-            'remaining_amount' => $movementData['remaining_amount'] ?? ($movementData['total_amount'] - ($movementData['paid_amount'] ?? 0)),
-            'status' => ($movementData['remaining_amount'] ?? $movementData['total_amount']) > 0 ? 'pending' : 'paid',
-            'due_type' => $movementData['movement_type'] === 'transfer_in' ? 'receivable' : 'payable',
-            'description' => "Stock transfer: " . ($movementData['notes'] ?? 'Branch transfer')
+            'paid_amount' => $paid,
+            'remaining_amount' => $remaining,
+
+            // Status logic
+            'status' => $remaining > 0 ? 'pending' : 'paid',
+
+            // IMPORTANT: Correct logic
+            'due_type' => $movementData['movement_type'] === 'transfer_in'
+                ? 'payable'        // Receiving branch must pay
+                : 'receivable',    // Sending branch should receive
+
+            'description' => "Stock transfer: " . ($movementData['notes'] ?? 'Branch transfer'),
         ];
 
         return $this->branchDuesModel->createBranchDue($dueData);
     }
+
 
     private function handleDuesUpdate($stockMovementId, $movementData)
     {
@@ -280,19 +297,41 @@ class StockController
 
         return $this->branchDuesModel->updatePayment($dueId, $updateData);
     }
-
     private function handleDuesCancellation($stockMovementId)
     {
-        // Cancel supplier dues
-        $supplierDue = $this->supplierDuesModel->getDueByStockMovement($stockMovementId);
-        if ($supplierDue['success'] && !empty($supplierDue['data'])) {
-            $this->supplierDuesModel->cancelDue($supplierDue['data']['id']);
-        }
+        try {
+            // Cancel supplier dues
+            $supplierDue = $this->supplierDuesModel->getDueByStockMovement($stockMovementId);
+            if ($supplierDue['success'] && !empty($supplierDue['data'])) {
+                $this->supplierDuesModel->cancelDue($supplierDue['data']['id']);
+            }
 
-        // Cancel branch dues
-        $branchDue = $this->branchDuesModel->getBranchDueById($stockMovementId);
-        if ($branchDue['success'] && !empty($branchDue['data'])) {
-            $this->branchDuesModel->deleteBranchDue($branchDue['data']['id']);
+            // Cancel branch dues - USE THE NEW METHOD
+            $branchDue = $this->branchDuesModel->getDueByStockMovement($stockMovementId);
+            if ($branchDue['success'] && !empty($branchDue['data'])) {
+                $this->branchDuesModel->deleteBranchDue($branchDue['data']['id']);
+            }
+
+            // Return appropriate response
+            $cancelled = [];
+            if ($supplierDue['success'] && !empty($supplierDue['data'])) {
+                $cancelled[] = "supplier_due";
+            }
+            if ($branchDue['success'] && !empty($branchDue['data'])) {
+                $cancelled[] = "branch_due";
+            }
+
+            if (!empty($cancelled)) {
+                return sendResponse(200, successResponse("Dues cancelled successfully", [
+                    "cancelled_dues" => $cancelled,
+                    "stock_movement_id" => $stockMovementId
+                ]));
+            }
+
+            return sendResponse(404, errorResponse("No dues found to cancel for this stock movement"));
+
+        } catch (Exception $e) {
+            return sendResponse(500, errorResponse("Database error: " . $e->getMessage()));
         }
     }
     private function handleGetStockData()
@@ -331,7 +370,7 @@ class StockController
 
             // Filter by reference branch if specified
             if ($reference_branch_id && isset($result['data'])) {
-                $result['data'] = array_filter($result['data'], function($movement) use ($reference_branch_id) {
+                $result['data'] = array_filter($result['data'], function ($movement) use ($reference_branch_id) {
                     return $movement['reference_branch_id'] == $reference_branch_id;
                 });
                 $result['data'] = array_values($result['data']); // Reindex array
@@ -354,7 +393,7 @@ class StockController
             if ($result["success"]) {
                 $movementBranch = $result['data']['branch_id'] ?? null;
                 $movementReferenceBranch = $result['data']['reference_branch_id'] ?? null;
-                
+
                 if ($this->isBranchUser($user)) {
                     $userBranch = $user['data']['branch_id'];
                     if ($movementBranch !== $userBranch && $movementReferenceBranch !== $userBranch) {
@@ -375,15 +414,15 @@ class StockController
     private function validateTransferData($data)
     {
         $movement_type = $data['movement_type'] ?? null;
-        
+
         // Check if this is a transfer movement
         if (in_array($movement_type, ['transfer_in', 'transfer_out'])) {
-            
+
             // Validate reference_branch_id exists for transfers
             if (empty($data['reference_branch_id'])) {
                 return errorResponse(
-                    "Reference branch required", 
-                    ["reference_branch_id" => "Reference branch is required for transfer movements"], 
+                    "Reference branch required",
+                    ["reference_branch_id" => "Reference branch is required for transfer movements"],
                     "MISSING_REFERENCE_BRANCH"
                 );
             }
@@ -391,8 +430,8 @@ class StockController
             // Validate reference_branch_id is different from branch_id
             if (isset($data['branch_id']) && $data['reference_branch_id'] == $data['branch_id']) {
                 return errorResponse(
-                    "Invalid reference branch", 
-                    ["reference_branch_id" => "Reference branch cannot be the same as source branch"], 
+                    "Invalid reference branch",
+                    ["reference_branch_id" => "Reference branch cannot be the same as source branch"],
                     "INVALID_REFERENCE_BRANCH"
                 );
             }
@@ -401,19 +440,19 @@ class StockController
             $user = require_authenticated_user();
             if ($this->isBranchUser($user)) {
                 $userBranch = $user['data']['branch_id'];
-                
+
                 if ($movement_type === 'transfer_out' && $data['reference_branch_id'] == $userBranch) {
                     return errorResponse(
-                        "Invalid transfer", 
-                        ["reference_branch_id" => "Cannot transfer to your own branch"], 
+                        "Invalid transfer",
+                        ["reference_branch_id" => "Cannot transfer to your own branch"],
                         "INVALID_TRANSFER_BRANCH"
                     );
                 }
-                
+
                 if ($movement_type === 'transfer_in' && $data['branch_id'] != $userBranch) {
                     return errorResponse(
-                        "Invalid transfer", 
-                        ["branch_id" => "Cannot receive transfers for other branches"], 
+                        "Invalid transfer",
+                        ["branch_id" => "Cannot receive transfers for other branches"],
                         "INVALID_TRANSFER_BRANCH"
                     );
                 }

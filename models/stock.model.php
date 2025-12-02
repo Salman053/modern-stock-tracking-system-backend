@@ -443,7 +443,7 @@ class StockModel
             case 'transfer_out':
                 // Revert: increase stock in current branch and decrease from reference branch
                 $this->updateProductStock($movement_data['product_id'], $movement_data['branch_id'], 'increase', $movement_data['quantity']);
-                if (!empty($movement_data['reference_branch_id'])) {
+                if (!empty($movement_data[''])) {
                     $this->updateProductStock($movement_data['product_id'], $movement_data['reference_branch_id'], 'decrease', $movement_data['quantity']);
                 }
                 break;
