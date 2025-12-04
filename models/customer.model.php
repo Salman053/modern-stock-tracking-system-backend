@@ -32,32 +32,32 @@ class CustomerModel
 
             if (!empty($data["email"]) && !validation_utils::validateEmail($data["email"])) {
                 return errorResponse(
-                    "Invalid email format", 
-                    ["email" => "Please provide a valid email address"], 
+                    "Invalid email format",
+                    ["email" => "Please provide a valid email address"],
                     "INVALID_EMAIL"
                 );
             }
 
             if (!preg_match('/^\d{13}$/', $data["cnic"])) {
                 return errorResponse(
-                    "Invalid CNIC format", 
-                    ["cnic" => "CNIC must be 13 digits without dashes"], 
+                    "Invalid CNIC format",
+                    ["cnic" => "CNIC must be 13 digits without dashes"],
                     "INVALID_CNIC"
                 );
             }
 
             if (!preg_match('/^\+?[\d\s\-\(\)]{10,}$/', $data["phone"])) {
                 return errorResponse(
-                    "Invalid phone format", 
-                    ["phone" => "Please provide a valid phone number"], 
+                    "Invalid phone format",
+                    ["phone" => "Please provide a valid phone number"],
                     "INVALID_PHONE"
                 );
             }
 
             if ($this->cnicExists($data['cnic'])) {
                 return errorResponse(
-                    "CNIC already exists", 
-                    ["cnic" => "A customer with this CNIC already exists"], 
+                    "CNIC already exists",
+                    ["cnic" => "A customer with this CNIC already exists"],
                     "DUPLICATE_CNIC"
                 );
             }
@@ -101,21 +101,21 @@ class CustomerModel
                 ];
 
                 return successResponse(
-                    "Customer {$data['name']} added successfully", 
+                    "Customer {$data['name']} added successfully",
                     $customerData
                 );
             } else {
                 return errorResponse(
-                    "Failed to add customer", 
-                    [], 
+                    "Failed to add customer",
+                    [],
                     "INSERT_FAILED"
                 );
             }
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while adding customer", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while adding customer",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -144,11 +144,11 @@ class CustomerModel
             $whereClause .= " AND u.status = 'active' AND b.status = 'active'";
 
             $query = "SELECT c.*, u.username as created_by, b.name as branch_name 
-                      FROM {$this->table_name} c
-                      LEFT JOIN users u ON c.user_id = u.id
-                      LEFT JOIN branches b ON c.branch_id = b.id
-                      {$whereClause} 
-                      ORDER BY c.created_at DESC";
+                        FROM {$this->table_name} c
+                        LEFT JOIN users u ON c.user_id = u.id
+                        LEFT JOIN branches b ON c.branch_id = b.id
+                        {$whereClause} 
+                        ORDER BY c.created_at DESC";
 
             $stmt = $this->conn->prepare($query);
 
@@ -161,15 +161,15 @@ class CustomerModel
             $customers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             return successResponse(
-                "Customers retrieved successfully", 
+                "Customers retrieved successfully",
                 $customers,
-                ["count" => count($customers)]
+                // ["count" => count($customers)]
             );
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while fetching customers", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while fetching customers",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -197,16 +197,16 @@ class CustomerModel
                 return successResponse("Customer retrieved successfully", $customer);
             } else {
                 return errorResponse(
-                    "Customer not found", 
-                    [], 
+                    "Customer not found",
+                    [],
                     "CUSTOMER_NOT_FOUND"
                 );
             }
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while fetching customer", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while fetching customer",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -262,16 +262,16 @@ class CustomerModel
                 return successResponse("Customer updated successfully");
             } else {
                 return errorResponse(
-                    "Failed to update customer", 
-                    [], 
+                    "Failed to update customer",
+                    [],
                     "UPDATE_FAILED"
                 );
             }
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while updating customer", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while updating customer",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -300,16 +300,16 @@ class CustomerModel
                 return successResponse("Customer archived successfully");
             } else {
                 return errorResponse(
-                    "Failed to archive customer", 
-                    [], 
+                    "Failed to archive customer",
+                    [],
                     "UPDATE_FAILED"
                 );
             }
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while archiving customer", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while archiving customer",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -323,20 +323,20 @@ class CustomerModel
 
         try {
             $offset = ($page - 1) * $limit;
-            
+
             // Count total records - specify table alias
             if ($include_archived) {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} c WHERE c.branch_id = :branch_id";
             } else {
                 $countQuery = "SELECT COUNT(*) as total FROM {$this->table_name} c WHERE c.branch_id = :branch_id AND c.status != 'archived'";
             }
-            
+
             $countStmt = $this->conn->prepare($countQuery);
             $countStmt->bindValue(":branch_id", $branch_id);
             $countStmt->execute();
             $totalCount = $countStmt->fetch(PDO::FETCH_ASSOC)['total'];
             $totalPages = ceil($totalCount / $limit);
-            
+
             // Get paginated data
             if ($include_archived) {
                 $query = "SELECT c.*, u.username as created_by, b.name as branch_name 
@@ -355,34 +355,34 @@ class CustomerModel
                           ORDER BY c.created_at DESC 
                           LIMIT :limit OFFSET :offset";
             }
-            
+
             $stmt = $this->conn->prepare($query);
             $stmt->bindValue(":branch_id", $branch_id, PDO::PARAM_INT);
             $stmt->bindValue(":limit", $limit, PDO::PARAM_INT);
             $stmt->bindValue(":offset", $offset, PDO::PARAM_INT);
             $stmt->execute();
-            
+
             $customers = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            
+
             $paginationMeta = [
-                'current_page' => (int)$page,
-                'per_page' => (int)$limit,
-                'total_customers' => (int)$totalCount,
-                'total_pages' => (int)$totalPages,
+                'current_page' => (int) $page,
+                'per_page' => (int) $limit,
+                'total_customers' => (int) $totalCount,
+                'total_pages' => (int) $totalPages,
                 'has_next' => $page < $totalPages,
                 'has_prev' => $page > 1
             ];
-            
+
             return successResponse(
-                "Customers retrieved successfully", 
+                "Customers retrieved successfully",
                 $customers,
                 $paginationMeta
             );
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while fetching customers", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while fetching customers",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
@@ -418,21 +418,21 @@ class CustomerModel
             $customers = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             return successResponse(
-                "Regular customers retrieved successfully", 
+                "Regular customers retrieved successfully",
                 $customers,
                 ["count" => count($customers)]
             );
 
         } catch (PDOException $e) {
             return errorResponse(
-                "Database error occurred while fetching regular customers", 
-                ["database" => $e->getMessage()], 
+                "Database error occurred while fetching regular customers",
+                ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
         }
     }
 
- 
+
     private function cnicExists($cnic)
     {
         try {
@@ -458,7 +458,7 @@ class CustomerModel
         }
     }
 
-  
+
     private function branchExists($branch_id)
     {
         try {

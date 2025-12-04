@@ -179,6 +179,16 @@ try {
             $controller = new DuePaymentController();
             $controller->handleRequest($segments);
             break;
+        case 'sales':
+            require_once __DIR__ . '/controllers/sales.controller.php';
+            $controller = new SalesController();
+            $controller->handleRequest($segments);
+            break;
+        case 'sales-items':
+            require_once __DIR__ . '/controllers/sales_item.controller.php';
+            $controller = new SalesItemController();
+            $controller->handleRequest($segments);
+            break;
         default:
             throw new Exception("Endpoint not found. " . $resource, 404);
     }

@@ -14,9 +14,7 @@ class ProductModel
         $this->conn = $db->getConnection();
     }
 
-    /* --------------------------------------------------------------------
-        ADD PRODUCT
-       -------------------------------------------------------------------- */
+
     public function addProduct($data)
     {
         if (!$data) {
@@ -69,7 +67,7 @@ class ProductModel
             return successResponse(
                 "Product added successfully",
                 $product
-            );  
+            );
         } catch (PDOException $e) {
             return errorResponse(
                 "Database error occurred",
@@ -78,28 +76,28 @@ class ProductModel
             );
         }
     }
-public function getProducts($user_id = null, $branch_id = null, $status = null)
-{
-    $query = "SELECT * FROM {$this->table_name} WHERE 1=1";
-    $params = [];
+    public function getProducts($user_id = null, $branch_id = null, $status = null)
+    {
+        $query = "SELECT * FROM {$this->table_name} WHERE 1=1";
+        $params = [];
 
-    if ($user_id) {
-        $query .= " AND user_id = :user_id";
-        $params[":user_id"] = $user_id;
-    }
+        if ($user_id) {
+            $query .= " AND user_id = :user_id";
+            $params[":user_id"] = $user_id;
+        }
 
-    if ($branch_id) {
-        $query .= " AND branch_id = :branch_id";
-        $params[":branch_id"] = $branch_id;
-    }
+        if ($branch_id) {
+            $query .= " AND branch_id = :branch_id";
+            $params[":branch_id"] = $branch_id;
+        }
 
-    if ($status) {
-        $query .= " AND status = :status";
-        $params[":status"] = $status;
-    }
+        if ($status) {
+            $query .= " AND status = :status";
+            $params[":status"] = $status;
+        }
 
-    // Order by status (active first) and then by created date (newest first)
-    $query .= " ORDER BY 
+        // Order by status (active first) and then by created date (newest first)
+        $query .= " ORDER BY 
         CASE 
             WHEN status = 'active' THEN 1
             WHEN status = 'inactive' THEN 2
@@ -109,30 +107,30 @@ public function getProducts($user_id = null, $branch_id = null, $status = null)
         END ASC,
         created_at DESC";
 
-    try {
-        $stmt = $this->conn->prepare($query);
+        try {
+            $stmt = $this->conn->prepare($query);
 
-        foreach ($params as $key => $value) {
-            $stmt->bindValue($key, $value);
+            foreach ($params as $key => $value) {
+                $stmt->bindValue($key, $value);
+            }
+
+            $stmt->execute();
+
+            $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse(
+                "Products retrieved successfully",
+                $products,
+                ["count" => count($products)]
+            );
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
         }
-
-        $stmt->execute();
-
-        $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-        return successResponse(
-            "Products retrieved successfully",
-            $products,
-            ["count" => count($products)]
-        );
-    } catch (PDOException $e) {
-        return errorResponse(
-            "Database error occurred",
-            ["database" => $e->getMessage()],
-            "DATABASE_EXCEPTION"
-        );
     }
-}
     /* --------------------------------------------------------------------
         GET SINGLE PRODUCT
        -------------------------------------------------------------------- */
@@ -313,10 +311,10 @@ public function getProducts($user_id = null, $branch_id = null, $status = null)
             $products = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
             $paginationMeta = [
-                'current_page' => (int)$page,
-                'per_page' => (int)$limit,
-                'total_products' => (int)$totalCount,
-                'total_pages' => (int)$totalPages,
+                'current_page' => (int) $page,
+                'per_page' => (int) $limit,
+                'total_products' => (int) $totalCount,
+                'total_pages' => (int) $totalPages,
                 'has_next' => $page < $totalPages,
                 'has_prev' => $page > 1
             ];

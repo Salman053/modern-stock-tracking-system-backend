@@ -66,13 +66,13 @@ class CustomerController
         }
 
         try {
-            if ($regular_only) {
-                $result = $this->customerModel->getRegularCustomers($branch_id);
-            } else {
-                $result = $this->customerModel->getCustomers($branch_id, $user_id, $include_archived);
-            }
+            // if ($regular_only) {
+            //     $result = $this->customerModel->getRegularCustomers($branch_id);
+            // } else {
+            $result = $this->customerModel->getCustomers($branch_id, $user_id, $include_archived);
+            // }
 
-            if ($result["success"]) {
+            if ($result["success"] === true) {
                 sendResponse(200, $result);
             } else {
                 sendResponse(400, $result);
@@ -95,7 +95,7 @@ class CustomerController
             if ($result["success"]) {
                 // Check if user has access to this customer
                 $customerBranch = $result['data']['branch_id'] ?? null;
-                
+
                 if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
                     if ($customerBranch !== $user['data']['branch_id']) {
                         $response = errorResponse("Access denied to this customer");
@@ -138,7 +138,7 @@ class CustomerController
 
         // Set user_id and branch_id based on role
         $data['user_id'] = $user['data']['id'];
-        
+
         if ($user['data']['role'] === 'branch-admin' || $user['data']['role'] === 'staff') {
             $data['branch_id'] = $user['data']['branch_id']; // Restrict to user's branch
         }
@@ -181,7 +181,7 @@ class CustomerController
         try {
             // First get the existing customer to check permissions
             $existingCustomer = $this->customerModel->getCustomerById($customerId);
-            
+
             if (!$existingCustomer['success']) {
                 sendResponse(404, $existingCustomer);
                 return;
@@ -224,7 +224,7 @@ class CustomerController
         try {
             // First get the existing customer to check permissions
             $existingCustomer = $this->customerModel->getCustomerById($customerId);
-            
+
             if (!$existingCustomer['success']) {
                 sendResponse(404, $existingCustomer);
                 return;
