@@ -14,7 +14,7 @@ class SalesItemModel
         $this->db = new Database();
         $this->conn = $this->db->getConnection();
     }
-    public function addSaleItem($data)
+    public function addSaleItem($data,$sale_id)
     {
         try {
             // Validation of required fields
@@ -43,7 +43,7 @@ class SalesItemModel
             }
 
             // Check if sale exists
-            if (!$this->saleExists($data['sale_id'])) {
+            if (!$this->saleExists($sale_id)) {
                 return errorResponse("Invalid sale ID", [], "INVALID_SALE");
             }
 
@@ -98,7 +98,7 @@ class SalesItemModel
                              created_at = NOW()";
 
                 $stmt = $this->conn->prepare($query);
-                $stmt->bindParam(":sale_id", $data['sale_id']);
+                $stmt->bindParam(":sale_id", $sale_id);
                 $stmt->bindParam(":product_id", $data['product_id']);
                 $stmt->bindParam(":user_id", $data['user_id']);
                 $stmt->bindParam(":branch_id", $data['branch_id']);

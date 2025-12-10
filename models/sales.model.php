@@ -2,11 +2,13 @@
 
 require_once "utils/validation_utils.php";
 require_once "config/database.php";
-require_once "sales_item.model.php";
+
 class SalesModel
 {
     private $conn;
     private $table_name = "sales";
+    private $items_table = "sales_items";
+    private $products_table = "products";
     private $db;
 
     public function __construct()
@@ -14,7 +16,6 @@ class SalesModel
         $this->db = new Database();
         $this->conn = $this->db->getConnection();
     }
-
 
     public function createSale($data)
     {
@@ -84,7 +85,8 @@ class SalesModel
             $data = validation_utils::sanitizeInput($data);
 
             // Calculate if fully paid
-            $is_fully_paid = ($data['paid_amount'] >= ($data['total_amount'] - ($data['discount'] ?? 0)));
+            $discount = $data['discount'] ?? 0;
+            $is_fully_paid = ($data['paid_amount'] >= ($data['total_amount'] - $discount));
 
             $query = "INSERT INTO " . $this->table_name . " 
                      SET user_id = :user_id, 
@@ -97,6 +99,7 @@ class SalesModel
                          profit = :profit,
                          note = :note,
                          is_fully_paid = :is_fully_paid,
+                         status = :status,
                          created_at = NOW()";
 
             $stmt = $this->conn->prepare($query);
@@ -107,22 +110,27 @@ class SalesModel
             $stmt->bindParam(":sale_date", $data['sale_date']);
             $stmt->bindParam(":total_amount", $data['total_amount']);
             $stmt->bindParam(":paid_amount", $data['paid_amount']);
-            $discount = $data['discount'] ?? 0;
             $stmt->bindParam(":discount", $discount);
             $profit = $data['profit'] ?? 0;
             $stmt->bindParam(":profit", $profit);
             $note = $data['note'] ?? null;
             $stmt->bindParam(":note", $note);
             $stmt->bindParam(":is_fully_paid", $is_fully_paid, PDO::PARAM_BOOL);
+            $status = $data['status'] ?? 'pending';
+            $stmt->bindParam(":status", $status);
 
             if ($stmt->execute()) {
+                $saleId = $this->conn->lastInsertId();
                 $saleData = [
-                    "id" => $this->conn->lastInsertId(),
+                    "id" => $saleId,
                     "sale_date" => $data['sale_date'],
                     "total_amount" => $data['total_amount'],
                     "paid_amount" => $data['paid_amount'],
+                    "discount" => $discount,
+                    "profit" => $profit,
                     "is_fully_paid" => $is_fully_paid,
-                    "branch_id" => $data['branch_id']
+                    "branch_id" => $data['branch_id'],
+                    "status" => $status
                 ];
 
                 return successResponse(
@@ -146,7 +154,6 @@ class SalesModel
         }
     }
 
-
     public function createSaleWithItems($saleData, $itemsData)
     {
         try {
@@ -161,35 +168,40 @@ class SalesModel
             }
 
             $saleId = $saleResult['data']['id'];
+            $totalProfit = 0;
+            $calculatedTotal = 0;
 
             // Add sale items
-            $salesItemModel = new SalesItemModel();
-            $totalProfit = 0;
-
             foreach ($itemsData as $item) {
-                $item['sale_id'] = $saleId;
-                $item['user_id'] = $saleData['user_id'];
-                $item['branch_id'] = $saleData['branch_id'];
-
-                $itemResult = $salesItemModel->addSaleItem($item);
+                $itemResult = $this->addSaleItem($item, $saleId);
 
                 if (!$itemResult['success']) {
                     $this->conn->rollBack();
                     return $itemResult;
                 }
 
-                // Accumulate profit from items
+                // Accumulate profit and total from items
                 if (isset($itemResult['data']['item_profit'])) {
                     $totalProfit += $itemResult['data']['item_profit'];
                 }
+                if (isset($itemResult['data']['total'])) {
+                    $calculatedTotal += $itemResult['data']['total'];
+                }
             }
 
-            // Update sale with total profit
-            $updateQuery = "UPDATE {$this->table_name} SET profit = :profit WHERE id = :id";
+            // Update sale with total profit and calculated total
+            $updateQuery = "UPDATE {$this->table_name} 
+                           SET profit = :profit, 
+                               total_amount = :total_amount 
+                           WHERE id = :id";
             $updateStmt = $this->conn->prepare($updateQuery);
             $updateStmt->bindParam(":profit", $totalProfit);
+            $updateStmt->bindParam(":total_amount", $calculatedTotal);
             $updateStmt->bindParam(":id", $saleId);
             $updateStmt->execute();
+
+            // Recalculate if fully paid
+            $this->recalculateIsFullyPaid($saleId);
 
             $this->conn->commit();
 
@@ -205,6 +217,116 @@ class SalesModel
             $this->conn->rollBack();
             return errorResponse(
                 "Database error occurred while creating sale with items",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
+    public function addSaleItem($itemData, $saleId = null)
+    {
+        try {
+            // If saleId is not provided, get it from itemData
+            if ($saleId === null) {
+                $saleId = $itemData['sale_id'] ?? null;
+            }
+            
+            if (!$saleId) {
+                return errorResponse("Sale ID is required", [], "MISSING_SALE_ID");
+            }
+
+            // Validate required fields
+            $required_fields = ["product_id", "quantity", "unit_price"];
+            $validateErrors = validation_utils::validateRequired($itemData, $required_fields);
+
+            if (!empty($validateErrors)) {
+                return errorResponse("Validation failed", $validateErrors, "VALIDATION_ERROR");
+            }
+
+            // Validate numeric fields
+            if (!is_numeric($itemData["quantity"]) || $itemData["quantity"] <= 0) {
+                return errorResponse(
+                    "Invalid quantity",
+                    ["quantity" => "Quantity must be a positive number"],
+                    "INVALID_QUANTITY"
+                );
+            }
+
+            if (!is_numeric($itemData["unit_price"]) || $itemData["unit_price"] < 0) {
+                return errorResponse(
+                    "Invalid unit price",
+                    ["unit_price" => "Unit price must be a non-negative number"],
+                    "INVALID_UNIT_PRICE"
+                );
+            }
+
+            // Check if sale exists
+            $saleCheck = $this->getSaleById($saleId, false);
+            if (!$saleCheck['success']) {
+                return $saleCheck;
+            }
+
+            // Check if product exists and has sufficient stock
+            $productCheck = $this->checkProductStock($itemData['product_id'], $itemData['quantity'], $saleCheck['data']['branch_id']);
+            if (!$productCheck['success']) {
+                return $productCheck;
+            }
+
+            // Get product cost for profit calculation
+            $productCost = $this->getProductCost($itemData['product_id']);
+            $quantity = (float) $itemData['quantity'];
+            $unitPrice = (float) $itemData['unit_price'];
+            $total = $quantity * $unitPrice;
+            $itemProfit = ($unitPrice - $productCost) * $quantity;
+
+            $query = "INSERT INTO " . $this->items_table . " 
+                     SET sale_id = :sale_id, 
+                         product_id = :product_id,
+                         user_id = :user_id,
+                         branch_id = :branch_id,
+                         quantity = :quantity,
+                         unit_price = :unit_price,
+                         total = :total,
+                         created_at = NOW()";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":sale_id", $saleId);
+            $stmt->bindParam(":product_id", $itemData['product_id']);
+            $stmt->bindParam(":user_id", $saleCheck['data']['user_id']);
+            $stmt->bindParam(":branch_id", $saleCheck['data']['branch_id']);
+            $stmt->bindParam(":quantity", $quantity);
+            $stmt->bindParam(":unit_price", $unitPrice);
+            $stmt->bindParam(":total", $total);
+
+            if ($stmt->execute()) {
+                // Update product stock
+                $this->updateProductStock($itemData['product_id'], $itemData['quantity'], $saleCheck['data']['branch_id'], 'subtract');
+
+                $itemData = [
+                    "id" => $this->conn->lastInsertId(),
+                    "sale_id" => $saleId,
+                    "product_id" => $itemData['product_id'],
+                    "quantity" => $quantity,
+                    "unit_price" => $unitPrice,
+                    "total" => $total,
+                    "item_profit" => $itemProfit
+                ];
+
+                return successResponse(
+                    "Sale item added successfully",
+                    $itemData
+                );
+            } else {
+                return errorResponse(
+                    "Failed to add sale item",
+                    [],
+                    "INSERT_FAILED"
+                );
+            }
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while adding sale item",
                 ["database" => $e->getMessage()],
                 "DATABASE_EXCEPTION"
             );
@@ -265,6 +387,16 @@ class SalesModel
 
             $sales = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+            // Add items to each sale if needed
+            if (isset($_GET['include_items']) && $_GET['include_items'] === 'true') {
+                foreach ($sales as &$sale) {
+                    $itemsResult = $this->getSaleItemsBySaleId($sale['id']);
+                    if ($itemsResult['success']) {
+                        $sale['items'] = $itemsResult['data'];
+                    }
+                }
+            }
+
             return successResponse(
                 "Sales retrieved successfully",
                 $sales
@@ -282,7 +414,7 @@ class SalesModel
     public function getSaleById($id, $include_items = true)
     {
         if (empty($id)) {
-            return errorResponse("Sale ID is required", [], "MISSING_id");
+            return errorResponse("Sale ID is required", [], "MISSING_ID");
         }
 
         try {
@@ -313,9 +445,7 @@ class SalesModel
 
             // Include sale items if requested
             if ($include_items) {
-                $salesItemModel = new SalesItemModel();
-                $itemsResult = $salesItemModel->getSaleItemsBySaleId($id);
-
+                $itemsResult = $this->getSaleItemsBySaleId($id);
                 if ($itemsResult['success']) {
                     $sale['items'] = $itemsResult['data'];
                 }
@@ -332,10 +462,85 @@ class SalesModel
         }
     }
 
+    public function getSaleItemsBySaleId($saleId)
+    {
+        if (empty($saleId)) {
+            return errorResponse("Sale ID is required", [], "MISSING_SALE_ID");
+        }
+
+        try {
+            $query = "SELECT si.*, 
+                             p.name as product_name,
+                             p.sku as product_sku,
+                             p.barcode as product_barcode,
+                             p.unit as product_unit,
+                             p.quantity as available_stock
+                      FROM {$this->items_table} si
+                      LEFT JOIN products p ON si.product_id = p.id AND p.status != 'archived'
+                      WHERE si.sale_id = ? 
+                      ORDER BY si.created_at ASC";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$saleId]);
+
+            $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            return successResponse("Sale items retrieved successfully", $items);
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while fetching sale items",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
+    public function getSaleItemById($itemId)
+    {
+        if (empty($itemId)) {
+            return errorResponse("Item ID is required", [], "MISSING_ITEM_ID");
+        }
+
+        try {
+            $query = "SELECT si.*, 
+                             p.name as product_name,
+                             p.sku as product_sku,
+                             s.branch_id,
+                             p.quantity as available_stock
+                      FROM {$this->items_table} si
+                      LEFT JOIN products p ON si.product_id = p.id
+                      LEFT JOIN sales s ON si.sale_id = s.id
+                      WHERE si.id = ?";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$itemId]);
+
+            $item = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$item) {
+                return errorResponse(
+                    "Sale item not found",
+                    [],
+                    "ITEM_NOT_FOUND"
+                );
+            }
+
+            return successResponse("Sale item retrieved successfully", $item);
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while fetching sale item",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
     public function updateSale($id, $data)
     {
         if (empty($id)) {
-            return errorResponse("Sale ID is required", [], "MISSING_id");
+            return errorResponse("Sale ID is required", [], "MISSING_ID");
         }
 
         if (empty($data)) {
@@ -369,6 +574,7 @@ class SalesModel
 
             foreach ($data as $key => $value) {
                 if (in_array($key, $allowedFields)) {
+                    // Recalculate is_fully_paid if amount fields are being updated
                     if ($key === 'paid_amount' || $key === 'total_amount' || $key === 'discount') {
                         $fields[] = "is_fully_paid = :is_fully_paid";
                         $new_paid = $data['paid_amount'] ?? $existingSale['data']['paid_amount'];
@@ -417,10 +623,183 @@ class SalesModel
         }
     }
 
+    public function updateSaleItem($itemId, $data)
+    {
+        if (empty($itemId)) {
+            return errorResponse("Item ID is required", [], "MISSING_ITEM_ID");
+        }
+
+        if (empty($data)) {
+            return errorResponse("No data provided for update", [], "MISSING_UPDATE_DATA");
+        }
+
+        try {
+            // Get existing item details
+            $existingItem = $this->getSaleItemById($itemId);
+            if (!$existingItem['success']) {
+                return $existingItem;
+            }
+
+            // Get sale details
+            $sale = $this->getSaleById($existingItem['data']['sale_id'], false);
+            if (!$sale['success']) {
+                return $sale;
+            }
+
+            // Check if sale is cancelled
+            if ($sale['data']['status'] === 'cancelled') {
+                return errorResponse("Cannot update items in a cancelled sale", [], "SALE_CANCELLED");
+            }
+
+            // Validate data
+            $allowedFields = ["quantity", "unit_price"];
+            $updateData = [];
+            
+            foreach ($data as $key => $value) {
+                if (in_array($key, $allowedFields)) {
+                    if ($key === 'quantity' && (!is_numeric($value) || $value <= 0)) {
+                        return errorResponse("Quantity must be a positive number", [], "INVALID_QUANTITY");
+                    }
+                    if ($key === 'unit_price' && (!is_numeric($value) || $value < 0)) {
+                        return errorResponse("Unit price must be a non-negative number", [], "INVALID_UNIT_PRICE");
+                    }
+                    $updateData[$key] = $value;
+                }
+            }
+
+            if (empty($updateData)) {
+                return errorResponse("No valid fields to update", [], "NO_VALID_FIELDS");
+            }
+
+            // Handle quantity changes
+            if (isset($updateData['quantity'])) {
+                $quantityDiff = $updateData['quantity'] - $existingItem['data']['quantity'];
+                if ($quantityDiff != 0) {
+                    $stockCheck = $this->checkProductStock(
+                        $existingItem['data']['product_id'], 
+                        abs($quantityDiff), 
+                        $sale['data']['branch_id'],
+                        $quantityDiff > 0
+                    );
+                    
+                    if (!$stockCheck['success']) {
+                        return $stockCheck;
+                    }
+                }
+            }
+
+            // Calculate new total
+            $newQuantity = $updateData['quantity'] ?? $existingItem['data']['quantity'];
+            $newUnitPrice = $updateData['unit_price'] ?? $existingItem['data']['unit_price'];
+            $newTotal = $newQuantity * $newUnitPrice;
+
+            $query = "UPDATE {$this->items_table} 
+                      SET quantity = :quantity,
+                          unit_price = :unit_price,
+                          total = :total,
+                          updated_at = NOW()
+                      WHERE id = :id";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":quantity", $newQuantity);
+            $stmt->bindParam(":unit_price", $newUnitPrice);
+            $stmt->bindParam(":total", $newTotal);
+            $stmt->bindParam(":id", $itemId);
+
+            if ($stmt->execute()) {
+                // Update product stock if quantity changed
+                if (isset($quantityDiff) && $quantityDiff != 0) {
+                    $this->updateProductStock(
+                        $existingItem['data']['product_id'], 
+                        abs($quantityDiff), 
+                        $sale['data']['branch_id'],
+                        $quantityDiff > 0 ? 'subtract' : 'add'
+                    );
+                }
+
+                // Recalculate sale totals
+                $this->recalculateSaleTotals($existingItem['data']['sale_id']);
+
+                return successResponse("Sale item updated successfully");
+            } else {
+                return errorResponse(
+                    "Failed to update sale item",
+                    [],
+                    "UPDATE_FAILED"
+                );
+            }
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while updating sale item",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
+    public function deleteSaleItem($itemId)
+    {
+        if (empty($itemId)) {
+            return errorResponse("Item ID is required", [], "MISSING_ITEM_ID");
+        }
+
+        try {
+            // Get existing item details
+            $existingItem = $this->getSaleItemById($itemId);
+            if (!$existingItem['success']) {
+                return $existingItem;
+            }
+
+            // Get sale details
+            $sale = $this->getSaleById($existingItem['data']['sale_id'], false);
+            if (!$sale['success']) {
+                return $sale;
+            }
+
+            // Check if sale is cancelled
+            if ($sale['data']['status'] === 'cancelled') {
+                return errorResponse("Cannot delete items from a cancelled sale", [], "SALE_CANCELLED");
+            }
+
+            $query = "DELETE FROM {$this->items_table} WHERE id = :id";
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":id", $itemId);
+
+            if ($stmt->execute()) {
+                // Restore product stock
+                $this->updateProductStock(
+                    $existingItem['data']['product_id'], 
+                    $existingItem['data']['quantity'], 
+                    $sale['data']['branch_id'],
+                    'add'
+                );
+
+                // Recalculate sale totals
+                $this->recalculateSaleTotals($existingItem['data']['sale_id']);
+
+                return successResponse("Sale item deleted successfully");
+            } else {
+                return errorResponse(
+                    "Failed to delete sale item",
+                    [],
+                    "DELETE_FAILED"
+                );
+            }
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while deleting sale item",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
     public function cancelSale($id)
     {
         if (empty($id)) {
-            return errorResponse("Sale ID is required", [], "MISSING_id");
+            return errorResponse("Sale ID is required", [], "MISSING_ID");
         }
 
         try {
@@ -428,6 +807,11 @@ class SalesModel
             $existingSale = $this->getSaleById($id, false);
             if (!$existingSale['success']) {
                 return $existingSale;
+            }
+
+            // Check if already cancelled
+            if ($existingSale['data']['status'] === 'cancelled') {
+                return errorResponse("Sale is already cancelled", [], "ALREADY_CANCELLED");
             }
 
             $query = "UPDATE {$this->table_name} 
@@ -439,13 +823,7 @@ class SalesModel
 
             if ($stmt->execute()) {
                 // Restore product quantities from sale items
-                $salesItemModel = new SalesItemModel();
-                $restoreResult = $salesItemModel->restoreProductQuantities($id);
-
-                if (!$restoreResult['success']) {
-                    error_log("Failed to restore product quantities for sale {$id}: " .
-                        json_encode($restoreResult));
-                }
+                $this->restoreProductQuantities($id);
 
                 return successResponse("Sale cancelled successfully");
             } else {
@@ -465,6 +843,172 @@ class SalesModel
         }
     }
 
+    private function restoreProductQuantities($saleId)
+    {
+        try {
+            // Get all items for this sale
+            $itemsResult = $this->getSaleItemsBySaleId($saleId);
+            if (!$itemsResult['success']) {
+                return false;
+            }
+
+            foreach ($itemsResult['data'] as $item) {
+                $this->updateProductStock(
+                    $item['product_id'],
+                    $item['quantity'],
+                    $item['branch_id'],
+                    'add'
+                );
+            }
+
+            return true;
+
+        } catch (Exception $e) {
+            error_log("Error restoring product quantities: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    private function recalculateSaleTotals($saleId)
+    {
+        try {
+            // Get all items for this sale
+            $itemsResult = $this->getSaleItemsBySaleId($saleId);
+            if (!$itemsResult['success']) {
+                return;
+            }
+
+            // Calculate new totals
+            $newTotal = 0;
+            $newProfit = 0;
+
+            foreach ($itemsResult['data'] as $item) {
+                $newTotal += $item['total'];
+                
+                // Calculate item profit (unit_price - cost_price) * quantity
+                $costPrice = $this->getProductCost($item['product_id']);
+                $itemProfit = ($item['unit_price'] - $costPrice) * $item['quantity'];
+                $newProfit += $itemProfit;
+            }
+
+            // Update sale with new totals
+            $updateData = [
+                'total_amount' => $newTotal,
+                'profit' => $newProfit
+            ];
+
+            $this->updateSale($saleId, $updateData);
+
+        } catch (Exception $e) {
+            error_log("Error recalculating sale totals: " . $e->getMessage());
+        }
+    }
+
+    private function recalculateIsFullyPaid($saleId)
+    {
+        try {
+            $query = "UPDATE {$this->table_name} 
+                      SET is_fully_paid = CASE 
+                          WHEN paid_amount >= (total_amount - discount) THEN 1 
+                          ELSE 0 
+                      END
+                      WHERE id = :id";
+            
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":id", $saleId);
+            $stmt->execute();
+            
+            return true;
+        } catch (Exception $e) {
+            error_log("Error recalculating is_fully_paid: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    private function checkProductStock($productId, $quantity, $branchId, $isAddition = false)
+    {
+        try {
+            // Check if product exists and has sufficient quantity in the specific branch
+            $query = "SELECT quantity, purchase_price_per_meter, sales_price_per_meter 
+                      FROM {$this->products_table} 
+                      WHERE id = ? AND branch_id = ? AND status = 'active'";
+            
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$productId, $branchId]);
+            $product = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            if (!$product) {
+                return errorResponse("Product not found in this branch", [], "PRODUCT_NOT_FOUND");
+            }
+
+            $availableStock = (float) $product['quantity'];
+
+            if (!$isAddition && $availableStock < $quantity) {
+                return errorResponse(
+                    "Insufficient stock",
+                    [
+                        "available" => $availableStock,
+                        "requested" => $quantity,
+                        "product_id" => $productId
+                    ],
+                    "INSUFFICIENT_STOCK"
+                );
+            }
+
+            return successResponse("Stock check passed", [
+                "available_stock" => $availableStock,
+                "purchase_price" => $product['purchase_price_per_meter'],
+                "sales_price" => $product['sales_price_per_meter']
+            ]);
+
+        } catch (PDOException $e) {
+            return errorResponse(
+                "Database error occurred while checking stock",
+                ["database" => $e->getMessage()],
+                "DATABASE_EXCEPTION"
+            );
+        }
+    }
+
+    private function updateProductStock($productId, $quantity, $branchId, $operation = 'subtract')
+    {
+        try {
+            $operator = $operation === 'subtract' ? '-' : '+';
+            $query = "UPDATE {$this->products_table} 
+                      SET quantity = quantity {$operator} :quantity,
+                          updated_at = NOW()
+                      WHERE id = :product_id AND branch_id = :branch_id";
+
+            $stmt = $this->conn->prepare($query);
+            $stmt->bindParam(":quantity", $quantity);
+            $stmt->bindParam(":product_id", $productId);
+            $stmt->bindParam(":branch_id", $branchId);
+            $stmt->execute();
+
+            return $stmt->rowCount() > 0;
+
+        } catch (Exception $e) {
+            error_log("Error updating product stock: " . $e->getMessage());
+            return false;
+        }
+    }
+
+    private function getProductCost($productId)
+    {
+        try {
+            $query = "SELECT purchase_price_per_meter FROM {$this->products_table} WHERE id = ?";
+            $stmt = $this->conn->prepare($query);
+            $stmt->execute([$productId]);
+            $product = $stmt->fetch(PDO::FETCH_ASSOC);
+
+            return $product ? (float)$product['purchase_price_per_meter'] : 0;
+        } catch (Exception $e) {
+            error_log("Error getting product cost: " . $e->getMessage());
+            return 0;
+        }
+    }
+
+    // Additional methods for getting sales summary, date range, etc.
     public function getSalesByDateRange($branch_id, $start_date, $end_date)
     {
         try {
